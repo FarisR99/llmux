@@ -22,6 +22,10 @@ Start from `llmux --help`. Top-level shortcuts and sub-apps:
 - Self-update: `llmux update [--check|--yes|--json]` — on-demand release check (the startup check runs on every interactive invocation; only a failed lookup backs off). `U` in the TUI.
 - Plain monitor: `llmux top [profile]` — the btop-style system monitor in a plain terminal, no TUI (also `t` in the TUI). GPUs always; a profile argument narrows it to one running model.
 
+For an external program or AI agent integrating with llmux-managed servers,
+read [the CLI integration reference](docs/reference/agent-cli-integration.md)
+before making integration changes.
+
 Every `list` / `show` / `check` command takes `--json` for machine-readable
 output, and `llmux --version` prints the version — the CLI is meant to be
 driven from scripts, agents, and CI. Running `llmux` with no arguments launches
