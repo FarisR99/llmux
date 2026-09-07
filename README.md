@@ -38,9 +38,26 @@ llmux unifies both under a single Textual dashboard. Run engines in Docker Compo
 
 ## This fork
 
-This fork adds native host `llama-server` profiles alongside the original Docker
-workflow: custom host binaries, local GGUF and companion-asset cataloging, and
-embedded MTP speculative decoding. vLLM remains Docker-only.
+This fork adds native host `llama-server` support while retaining the original
+Docker workflows.
+
+- **Host llama.cpp profiles.** Run a Linux `llama-server` already installed on
+  the machine, including a customized build or CPU-only configuration. llmux
+  manages its lifecycle, logs, readiness checks, port binding, GPU selection,
+  and monitoring without requiring Docker for that profile.
+- **Local GGUF asset catalog.** Configure read-only library roots and browse
+  existing model GGUFs, multimodal projectors, speculative draft models, and
+  Jinja chat templates from the CLI or TUI. Assets are selected explicitly;
+  llmux only reads their metadata and never moves, downloads, or modifies them.
+- **Multimodal and speculative bundles.** Host profiles can persist explicit
+  projector, external draft-model, draft-type, and chat-template paths, then
+  render the matching `llama-server` arguments safely at launch.
+- **Embedded MTP speculative decoding.** Models containing their own MTP heads
+  can use `draft_type: draft-mtp` without a separate draft GGUF. The optional
+  profile `mtp_n` value controls the number of speculative draft tokens; when
+  omitted, the installed `llama-server` default is used.
+- **Docker compatibility.** Existing Docker llama.cpp profiles continue to
+  work unchanged, and vLLM remains Docker-only.
 
 The goal is to keep this fork synchronized with the
 [upstream llmux project](https://github.com/Changroro/llmux) while carrying
