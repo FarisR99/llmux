@@ -136,43 +136,52 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True, group="dashboard-reload")
     async def _reload(self) -> None:
-        try:
-            running = await common_docker.running_container_names()
-        except Exception as exc:
-            self._scan_errors = {"docker"}
-            self.notify(
-                t(f"Docker status scan failed: {exc}",
-                  f"Docker 상태 스캔 실패: {exc}"),
-                severity="error",
-                timeout=8,
-            )
-            self.query_one("#status-bar", Static).update(
-                t(
-                    " [red]Docker status unavailable[/] · showing last verified state",
-                    " [red]Docker 상태 확인 불가[/] · 마지막 확인 상태 표시 중",
+        from tui.common import profile_store
+        if any(p.runtime == "host" for p in profile_store.list_profiles("llamacpp")):
+            from tui.common.runtime import dashboard_rows
+            rows, errors = await dashboard_rows()
+            self._scan_errors = set(errors)
+            self._container_snapshots = {}
+            for error in errors:
+                self.notify(error, severity="error", timeout=8)
+        else:
+            try:
+                running = await common_docker.running_container_names()
+            except Exception as exc:
+                self._scan_errors = {"docker"}
+                self.notify(
+                    t(f"Docker status scan failed: {exc}",
+                      f"Docker 상태 스캔 실패: {exc}"),
+                    severity="error",
+                    timeout=8,
                 )
-            )
-            return
+                self.query_one("#status-bar", Static).update(
+                    t(
+                        " [red]Docker status unavailable[/] · showing last verified state",
+                        " [red]Docker 상태 확인 불가[/] · 마지막 확인 상태 표시 중",
+                    )
+                )
+                return
 
-        self._container_snapshots = getattr(running, "snapshots", {})
+            self._container_snapshots = getattr(running, "snapshots", {})
 
-        rows: list[DashboardRow] = []
-        scan_errors: set[str] = set()
-        try:
-            rows.extend(self._vllm.rows(running))
-        except Exception as exc:
-            scan_errors.add("vllm")
-            rows.extend(row for row in self._rows if row.backend == "vllm")
-            self.notify(t(f"vLLM scan failed: {exc}", f"vLLM 스캔 실패: {exc}"),
-                        severity="error")
-        try:
-            rows.extend(self._llamacpp.rows(running))
-        except Exception as exc:
-            scan_errors.add("llamacpp")
-            rows.extend(row for row in self._rows if row.backend == "llamacpp")
-            self.notify(t(f"llama.cpp scan failed: {exc}", f"llama.cpp 스캔 실패: {exc}"),
-                        severity="error")
-        self._scan_errors = scan_errors
+            rows: list[DashboardRow] = []
+            scan_errors: set[str] = set()
+            try:
+                rows.extend(self._vllm.rows(running))
+            except Exception as exc:
+                scan_errors.add("vllm")
+                rows.extend(row for row in self._rows if row.backend == "vllm")
+                self.notify(t(f"vLLM scan failed: {exc}", f"vLLM 스캔 실패: {exc}"),
+                            severity="error")
+            try:
+                rows.extend(self._llamacpp.rows(running))
+            except Exception as exc:
+                scan_errors.add("llamacpp")
+                rows.extend(row for row in self._rows if row.backend == "llamacpp")
+                self.notify(t(f"llama.cpp scan failed: {exc}", f"llama.cpp 스캔 실패: {exc}"),
+                            severity="error")
+            self._scan_errors = scan_errors
         rows.sort(key=lambda r: (not r.running, r.backend, r.profile_name))
         self._rows = rows
         self._render_rows(rows)
@@ -261,6 +270,11 @@ class DashboardScreen(Screen):
                     break
 
     def _container_status_cell(self, row: DashboardRow) -> str:
+        if row.status_text:
+            label = row.status_text
+            if row.runtime == "host":
+                label += f" (host{f' PID {row.pid}' if row.pid else ''})"
+            return label
         snapshot = self._container_snapshots.get(row.container_name)
         status = snapshot.display_status if snapshot is not None else (
             "running" if row.running else "stopped"
@@ -431,15 +445,23 @@ class DashboardScreen(Screen):
                 "Could not verify every profile's port/GPU assignment because "
                 f"these scans failed: {failed}."
             )
-        try:
-            ext_ports = await common_docker.running_container_ports()
-            ext_msgs = external_port_conflicts(row, self._rows, ext_ports)
-        except Exception as exc:
+        if row.runtime == "host":
+            from tui.backends.llamacpp.host_runtime import conflict_warnings
+            warnings = await conflict_warnings(row.raw)
+            port_msgs = [w for w in warnings if w.startswith("port")]
+            gpu_msgs = [w for w in warnings if w.startswith("GPU")]
             ext_msgs = []
-            probe_msgs.append(
-                "Could not inspect running Docker container ports. "
-                f"Runtime port check will still run before start. ({exc})"
-            )
+            probe_msgs = []
+        else:
+            try:
+                ext_ports = await common_docker.running_container_ports()
+                ext_msgs = external_port_conflicts(row, self._rows, ext_ports)
+            except Exception as exc:
+                ext_msgs = []
+                probe_msgs.append(
+                    "Could not inspect running Docker container ports. "
+                    f"Runtime port check will still run before start. ({exc})"
+                )
 
         if not self.app.can_push_modal(modal_generation):
             return
@@ -633,7 +655,7 @@ class DashboardScreen(Screen):
         elif action == "logs":
             from tui.backends.llamacpp.screens.dashboard import LogViewer
 
-            self.app.push_screen(LogViewer(profile.container_name))
+            self.app.push_screen(LogViewer(profile.name if profile.runtime == "host" else profile.container_name, host=profile.runtime == "host"))
         elif action == "monitor":
             from tui.screens.monitor import MonitorScreen
             self.app.push_screen(MonitorScreen(row))

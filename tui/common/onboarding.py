@@ -14,6 +14,10 @@ COMMON_ENV_EXAMPLE = PROJECT_ROOT / ".env.common.example"
 
 
 def needs_onboarding() -> bool:
+    from tui.common import profile_store
+    profiles = [p for bk in ("vllm", "llamacpp") for p in profile_store.list_profiles(bk)]
+    if profiles and all(p.runtime == "host" for p in profiles):
+        return False
     if not COMMON_ENV.exists():
         return True
     ok, _messages = validate_common_env(COMMON_ENV)

@@ -19,6 +19,7 @@ from tui.backends.llamacpp.backend import (
     save_profile,
     validate_name,
 )
+from tui.backends.llamacpp.screens.library import AssetPickerScreen
 from tui.common import profile_store
 from tui.common.i18n import t
 
@@ -103,6 +104,22 @@ class ProfileFormScreen(ModalScreen[str | None]):
         # rename, and the original is what tells the two apart at save time.
         self._original_name = profile.name if profile is not None else ""
 
+    def on_mount(self) -> None:
+        self._runtime_fields()
+
+    @on(Select.Changed, "#runtime-select")
+    def _runtime_fields(self) -> None:
+        host = self.query_one("#runtime-select", Select).value == "host"
+        self.query_one("#binary-row").display = host
+        self.query_one("#model-path-row").display = host
+        self.query_one("#mmproj-path-row").display = host
+        self.query_one("#draft-path-row").display = host
+        self.query_one("#draft-type-row").display = host
+        self.query_one("#mtp-n-row").display = host
+        self.query_one("#template-path-row").display = host
+        self.query_one("#image-tag-input", Input).parent.display = not host
+        self.query_one("#container-input", Input).parent.display = not host
+
     def compose(self) -> ComposeResult:
         p = self._profile
         title = (
@@ -134,6 +151,36 @@ class ProfileFormScreen(ModalScreen[str | None]):
                         placeholder="my-profile",
                         id="name-input",
                     )
+
+                with Horizontal(classes="form-row"):
+                    yield Label(t("Runtime", "실행 방식"))
+                    yield Select([("Docker", "docker"), ("Host (Linux)", "host")],
+                                 value=p.runtime if p else str(profile_store.effective_defaults("llamacpp")["runtime"]), allow_blank=False, id="runtime-select")
+                with Horizontal(classes="form-row", id="binary-row"):
+                    yield Label(t("Server binary", "서버 실행 파일"))
+                    yield Input(value=p.server_binary if p else str(profile_store.effective_defaults("llamacpp")["server_binary"]), id="binary-input")
+                with Horizontal(classes="form-row", id="model-path-row"):
+                    yield Label(t("Local GGUF path", "로컬 GGUF 경로"))
+                    yield Input(value=p.model_path if p else "", id="model-path-input")
+                    yield Button(t("Browse", "찾기"), id="browse-model")
+                with Horizontal(classes="form-row", id="mmproj-path-row"):
+                    yield Label(t("Projector GGUF", "프로젝터 GGUF"))
+                    yield Input(value=p.mmproj_path if p else "", id="mmproj-path-input")
+                    yield Button(t("Browse", "찾기"), id="browse-mmproj")
+                with Horizontal(classes="form-row", id="draft-path-row"):
+                    yield Label(t("Draft GGUF", "드래프트 GGUF"))
+                    yield Input(value=p.draft_model_path if p else "", id="draft-path-input")
+                    yield Button(t("Browse", "찾기"), id="browse-draft")
+                with Horizontal(classes="form-row", id="draft-type-row"):
+                    yield Label(t("Draft type", "드래프트 유형"))
+                    yield Input(value=p.draft_type if p else "", placeholder="draft-mtp", id="draft-type-input")
+                with Horizontal(classes="form-row", id="mtp-n-row"):
+                    yield Label(t("Embedded MTP n", "내장 MTP n"))
+                    yield Input(value=str(p.mtp_n) if p and p.mtp_n else "", placeholder="llama-server default", id="mtp-n-input")
+                with Horizontal(classes="form-row", id="template-path-row"):
+                    yield Label(t("Jinja template", "Jinja 템플릿"))
+                    yield Input(value=p.chat_template_path if p else "", id="template-path-input")
+                    yield Button(t("Browse", "찾기"), id="browse-template")
 
                 with Horizontal(classes="form-row"):
                     yield Label(t("Container Name", "컨테이너 이름"))
@@ -225,6 +272,22 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 yield Button(t("Save", "저장"), id="save-btn", variant="primary")
                 yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
 
+    @on(Button.Pressed, "#browse-model, #browse-mmproj, #browse-draft, #browse-template")
+    def _browse_asset(self, event: Button.Pressed) -> None:
+        target_by_button = {
+            "browse-model": ("model", "#model-path-input"),
+            "browse-mmproj": ("mmproj", "#mmproj-path-input"),
+            "browse-draft": ("draft", "#draft-path-input"),
+            "browse-template": ("template", "#template-path-input"),
+        }
+        kind, target = target_by_button[event.button.id or ""]
+
+        def selected(path: str | None) -> None:
+            if path:
+                self.query_one(target, Input).value = path
+
+        self.app.push_screen(AssetPickerScreen(kind), selected)
+
     @on(Button.Pressed, "#save-btn")
     async def _on_save(self, event: Button.Pressed) -> None:
         name = self.query_one("#name-input", Input).value.strip()
@@ -295,6 +358,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
         except ValueError:
             self.notify(t("Port must be an integer 1024–65535", "Port 는 1024–65535 정수"), severity="error")
             return
+        mtp_n_raw = self.query_one("#mtp-n-input", Input).value.strip()
+        try:
+            mtp_n = int(mtp_n_raw or "0")
+            if mtp_n < 0:
+                raise ValueError
+        except ValueError:
+            self.notify(t("Embedded MTP n must be a non-negative integer", "내장 MTP n은 0 이상의 정수여야 합니다"), severity="error")
+            return
         if gpu_id and not re.match(r"^[0-9]+(,[0-9]+)*$", gpu_id):
             self.notify(t("GPU ID must be digits/commas (e.g. 0 or 0,1)", "GPU ID 는 숫자/콤마 (예: 0 또는 0,1)"), severity="error")
             return
@@ -317,6 +388,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
             return
 
         p = Profile(
+            runtime=str(self.query_one("#runtime-select", Select).value),
+            server_binary=(self.query_one("#binary-input", Input).value.strip() or "llama-server") if self.query_one("#runtime-select", Select).value == "host" else "llama-server",
+            model_path=self.query_one("#model-path-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "",
+            mmproj_path=self.query_one("#mmproj-path-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "",
+            draft_model_path=self.query_one("#draft-path-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "",
+            draft_type=self.query_one("#draft-type-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "",
+            mtp_n=mtp_n if self.query_one("#runtime-select", Select).value == "host" else 0,
+            chat_template_path=self.query_one("#template-path-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "",
             name=name,
             container_name=container or name,
             port=port_int,
@@ -339,7 +418,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify(str(exc), severity="error", timeout=8)
             return
         self.notify(t(f"Saved: {name}", f"저장: {name}"), severity="information")
-        if not hf_repo:
+        if not hf_repo and not p.model_path:
             self.notify(
                 t(
                     "Cannot start container without HF Repo (-hf download source required)",
@@ -347,7 +426,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 ),
                 severity="warning",
             )
-        if not effective_model_file:
+        if not effective_model_file and not p.model_path:
             self.notify(
                 t(
                     "No HF File/Model File — the linked config must have model-file to start",
@@ -368,6 +447,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
     async def _rename_allowed(self) -> bool:
         from tui.common import docker as common_docker
 
+        if self._profile.runtime == "host":
+            from tui.backends.llamacpp.host_process import require_stopped
+            try:
+                require_stopped(self._original_name)
+                return True
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.notify(str(exc), severity="error")
+                return False
         old_name = self._original_name
         container = self._profile.container_name or old_name
         try:

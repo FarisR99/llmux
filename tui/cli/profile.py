@@ -6,6 +6,7 @@ to disambiguate when the same name exists in both.
 """
 
 from __future__ import annotations
+from pathlib import Path
 
 import re
 from dataclasses import asdict
@@ -36,11 +37,12 @@ app = typer.Typer(help="Profile CRUD + quick-setup.", no_args_is_help=True)
 def _profile_to_row(p: profile_store.StoredProfile) -> dict:
     return {
         "backend": p.backend,
+        "runtime": p.runtime,
         "name": p.name,
         "port": p.port,
         "gpu_id": p.gpu_id,
         "config": p.config_name or p.name,
-        "model": p.model_id or p.model_file or "",
+        "model": p.model_path or p.model_id or p.model_file or "",
     }
 
 
@@ -65,7 +67,7 @@ def list_profiles(
     if json_out:
         emit_json(rows)
         return
-    emit_table(rows, columns=["backend", "name", "port", "gpu_id", "config", "model"])
+    emit_table(rows, columns=["backend", "runtime", "name", "port", "gpu_id", "config", "model"])
 
 
 @app.command("show")
@@ -278,6 +280,14 @@ def new_profile(
     backend: str = typer.Option(
         "vllm", "--backend", "-b", help=f"Backend ({', '.join(BACKENDS)})."
     ),
+    runtime: str = typer.Option("", "--runtime", help="docker or host (llama.cpp only)."),
+    server_binary: str = typer.Option("", "--server-binary", help="Host llama-server executable."),
+    model_path: str = typer.Option("", "--model-path", help="Host local GGUF path."),
+    mmproj_path: str = typer.Option("", "--mmproj-path", help="Host multimodal projector GGUF."),
+    draft_model_path: str = typer.Option("", "--draft-model-path", help="Host speculative draft GGUF."),
+    draft_type: str = typer.Option("", "--draft-type", help="Host draft type, e.g. draft-mtp."),
+    mtp_n: int = typer.Option(0, "--mtp-n", help="Host embedded MTP draft-token limit (0 = llama-server default)."),
+    chat_template_path: str = typer.Option("", "--chat-template-path", help="Host Jinja template."),
     port: int = typer.Option(0, "--port", "-p", help="Host port (0 = backend default)."),
     gpu_id: str = typer.Option("0", "--gpu-id", "-g", help="GPU id(s), comma-separated."),
     tensor_parallel: int = typer.Option(
@@ -363,7 +373,17 @@ def new_profile(
         _require_linked_config_exists(backend, name, config_name)
 
     defaults = profile_store.effective_defaults(backend)
+    runtime = runtime or str(defaults.get("runtime", "docker"))
+    server_binary = server_binary or str(defaults.get("server_binary", "llama-server"))
     sp = profile_store.StoredProfile(
+        runtime=runtime,
+        server_binary=server_binary,
+        model_path=model_path,
+        mmproj_path=mmproj_path,
+        draft_model_path=draft_model_path,
+        draft_type=draft_type,
+        mtp_n=mtp_n,
+        chat_template_path=chat_template_path,
         name=name,
         backend=backend,
         container_name=container_name or name,
@@ -386,10 +406,76 @@ def new_profile(
     print(f"Created profile '{name}' (backend={backend})")
 
 
+@app.command("from-library")
+def from_library(
+    name: str = typer.Argument(..., help="New host llama.cpp profile name."),
+    model_path: Path = typer.Option(..., "--model", help="Primary model path reported by `llmux library list`."),
+    mmproj_path: Optional[Path] = typer.Option(None, "--mmproj", help="Optional multimodal projector path."),
+    draft_model_path: Optional[Path] = typer.Option(None, "--draft", help="Optional speculative draft model path."),
+    draft_type: str = typer.Option("", "--draft-type", help="Draft type; defaults to draft-mtp."),
+    mtp_n: int = typer.Option(0, "--mtp-n", help="Embedded MTP draft-token limit (0 = llama-server default)."),
+    chat_template_path: Optional[Path] = typer.Option(None, "--chat-template", help="Optional Jinja template path."),
+    server_binary: str = typer.Option("", "--server-binary", help="Host llama-server executable."),
+    port: int = typer.Option(0, "--port", "-p", help="Host port (0 = default)."),
+    gpu_id: str = typer.Option("0", "--gpu-id", "-g", help="GPU id(s), comma-separated."),
+) -> None:
+    """Create a host profile from explicitly selected catalog assets."""
+    from tui.backends.llamacpp import library
+
+    _validate_profile_name(name, "llamacpp")
+    _reject_example_config(name, from_profile_name=True)
+    if profile_store.find_name_owner(name) is not None:
+        raise typer.BadParameter(f"profile '{name}' already exists", param_hint="NAME")
+    if port:
+        _validate_port(port)
+    _validate_gpu_id(gpu_id)
+    assets, errors = library.scan()
+    if errors:
+        raise typer.BadParameter("catalog cannot be used: " + "; ".join(errors), param_hint="--model")
+    by_path = {Path(asset.path).absolute(): asset for asset in assets}
+    def selected(path: Path | None, kind: str, hint: str) -> str:
+        if path is None:
+            return ""
+        asset = by_path.get(path.expanduser().absolute())
+        if asset is None or asset.kind != kind:
+            raise typer.BadParameter(
+                f"{path} is not a readable {kind} asset in a configured library root",
+                param_hint=hint,
+            )
+        return asset.path
+    model = selected(model_path, "model", "--model")
+    mmproj = selected(mmproj_path, "mmproj", "--mmproj")
+    draft = selected(draft_model_path, "draft", "--draft")
+    template = selected(chat_template_path, "template", "--chat-template")
+    if draft_type and not draft and draft_type != "draft-mtp":
+        raise typer.BadParameter("--draft-type requires --draft unless it is draft-mtp", param_hint="--draft-type")
+    if mtp_n and draft_type != "draft-mtp":
+        raise typer.BadParameter("--mtp-n requires --draft-type draft-mtp", param_hint="--mtp-n")
+    defaults = profile_store.effective_defaults("llamacpp")
+    profile_store.create_profile(profile_store.StoredProfile(
+        name=name, backend="llamacpp", runtime="host", container_name=name,
+        port=port or int(defaults["port"]), gpu_id=gpu_id,
+        config_name=name, server_binary=server_binary or str(defaults["server_binary"]),
+        model_path=model, mmproj_path=mmproj, draft_model_path=draft,
+        draft_type=draft_type or ("draft-mtp" if draft else ""),
+        mtp_n=mtp_n,
+        chat_template_path=template,
+    ))
+    print(f"Created host library profile '{name}'")
+
+
 @app.command("edit")
 def edit_profile(
     name: str = typer.Argument(..., help="Profile name."),
     backend: Optional[str] = typer.Option(None, "--backend", "-b"),
+    runtime: Optional[str] = typer.Option(None, "--runtime"),
+    server_binary: Optional[str] = typer.Option(None, "--server-binary"),
+    model_path: Optional[str] = typer.Option(None, "--model-path"),
+    mmproj_path: Optional[str] = typer.Option(None, "--mmproj-path"),
+    draft_model_path: Optional[str] = typer.Option(None, "--draft-model-path"),
+    draft_type: Optional[str] = typer.Option(None, "--draft-type"),
+    mtp_n: Optional[int] = typer.Option(None, "--mtp-n", help="Embedded MTP draft-token limit (0 = llama-server default)."),
+    chat_template_path: Optional[str] = typer.Option(None, "--chat-template-path"),
     port: Optional[int] = typer.Option(
         None, "--port", "-p", help="Host port (0 = backend default)."
     ),
@@ -459,6 +545,22 @@ def edit_profile(
         _validate_lora_limit(max_lora_rank, param_hint="--max-lora-rank")
 
     def apply_updates(sp: profile_store.StoredProfile) -> None:
+        if runtime is not None:
+            sp.runtime = runtime
+        if server_binary is not None:
+            sp.server_binary = server_binary
+        if model_path is not None:
+            sp.model_path = model_path
+        if mmproj_path is not None:
+            sp.mmproj_path = mmproj_path
+        if draft_model_path is not None:
+            sp.draft_model_path = draft_model_path
+        if draft_type is not None:
+            sp.draft_type = draft_type
+        if mtp_n is not None:
+            sp.mtp_n = mtp_n
+        if chat_template_path is not None:
+            sp.chat_template_path = chat_template_path
         if port is not None:
             if port:
                 _validate_port(port)
@@ -522,6 +624,13 @@ def edit_profile(
 def _require_stopped(sp: profile_store.StoredProfile, *, action: str) -> None:
     from tui.common import docker as common_docker
 
+    if sp.runtime == "host":
+        from tui.backends.llamacpp.host_process import require_stopped
+        try:
+            require_stopped(sp.name)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise typer.BadParameter(str(exc), param_hint="NAME") from exc
+        return
     container = sp.container_name or sp.name
     try:
         running = run_async(common_docker.running_container_names())
@@ -659,6 +768,9 @@ def quick_setup(
     name: str = typer.Option(
         "", "--name", "-n", help="Profile name (auto-derived from model/repo if omitted)."
     ),
+    runtime: str = typer.Option("", "--runtime", help="docker or host (llama.cpp only)."),
+    server_binary: str = typer.Option("", "--server-binary", help="Host llama-server executable."),
+    model_path: str = typer.Option("", "--model-path", help="Host local GGUF path."),
     port: int = typer.Option(
         0, "--port", "-p",
         help="Host port (0 = backend default: vLLM 8000, llama.cpp 8080).",
@@ -735,6 +847,13 @@ def quick_setup(
     """Create a profile + config in one step (mirrors TUI Quick Setup, both backends)."""
     if backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+    defaults = profile_store.effective_defaults(backend)
+    runtime = runtime or str(defaults.get("runtime", "docker"))
+    server_binary = server_binary or str(defaults.get("server_binary", "llama-server"))
+    if backend == "vllm" and (runtime != "docker" or model_path or server_binary != "llama-server"):
+        raise typer.BadParameter("Host runtime options are supported only for llama.cpp")
+    if backend not in BACKENDS:
+        raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
 
     # Same "given == differs from default" heuristic as `new` (see the helper's
     # docstring for its one blind spot: passing a flag's default explicitly).
@@ -802,6 +921,7 @@ def quick_setup(
         )
 
     _quick_setup_llamacpp(
+        runtime=runtime, server_binary=server_binary, model_path=model_path,
         hf_repo=hf_repo,
         hf_file=hf_file,
         name=name,
@@ -941,21 +1061,10 @@ def _quick_setup_llamacpp(
     jinja: bool,
     override_tensors: str,
     copy_config_from: str,
+    runtime: str = "docker",
+    server_binary: str = "llama-server",
+    model_path: str = "",
 ) -> None:
-    repo = _normalize_hf_repo(hf_repo)
-    if not repo or not _LLAMACPP_REPO_RE.match(repo):
-        raise typer.BadParameter(
-            "llama.cpp quick-setup requires a valid HF repo (org/name).",
-            param_hint="--hf-repo",
-        )
-    if not hf_file:
-        raise typer.BadParameter(
-            "llama.cpp quick-setup requires --hf-file (GGUF filename inside the repo).",
-            param_hint="--hf-file",
-        )
-    _validate_port(port)
-    _validate_gpu_id(gpu_id)
-
     from tui.backends.llamacpp.backend import (
         CONFIG_DIR as llamacpp_config_dir,
         Config as LcppConfig,
@@ -966,38 +1075,60 @@ def _quick_setup_llamacpp(
         validate_name as l_validate_name,
     )
 
-    # Validate the GGUF filename against the live repo listing when reachable.
-    # A failed lookup does not hard-fail (a headless caller may already know
-    # what's in the repo) but it must say the check was skipped — otherwise a
-    # typo'd --hf-file sails through and only surfaces at download time.
-    listing_available = True
-    try:
-        files = run_async(list_hf_repo_files(repo))
-    except HfListingUnavailable as exc:
-        typer.echo(
-            f"Warning: could not list {repo} ({exc}) — skipping --hf-file validation.",
-            err=True,
-        )
-        files = []
-        listing_available = False
-    gguf_files = [
-        str(f.get("path", ""))
-        for f in files
-        if isinstance(f, dict)
-        and f.get("type") == "file"
-        and str(f.get("path", "")).lower().endswith(".gguf")
-    ]
-    if listing_available and not gguf_files:
-        raise typer.BadParameter(
-            f"{repo} contains no GGUF files.", param_hint="--hf-file"
-        )
-    if gguf_files and hf_file not in gguf_files:
-        available = "\n  ".join(gguf_files[:20])
-        more = f"\n  ... ({len(gguf_files) - 20} more)" if len(gguf_files) > 20 else ""
-        raise typer.BadParameter(
-            f"'{hf_file}' not found in {repo}. Available GGUF files:\n  {available}{more}",
-            param_hint="--hf-file",
-        )
+    if not model_path:
+        repo = _normalize_hf_repo(hf_repo)
+        if not repo or not _LLAMACPP_REPO_RE.match(repo):
+            raise typer.BadParameter(
+                "llama.cpp quick-setup requires a valid HF repo (org/name).",
+                param_hint="--hf-repo",
+            )
+        if not hf_file:
+            raise typer.BadParameter(
+                "llama.cpp quick-setup requires --hf-file (GGUF filename inside the repo).",
+                param_hint="--hf-file",
+            )
+        _validate_port(port)
+        _validate_gpu_id(gpu_id)
+
+        # Validate the GGUF filename against the live repo listing when reachable.
+        # A failed lookup does not hard-fail (a headless caller may already know
+        # what's in the repo) but it must say the check was skipped — otherwise a
+        # typo'd --hf-file sails through and only surfaces at download time.
+        listing_available = True
+        try:
+            files = run_async(list_hf_repo_files(repo))
+        except HfListingUnavailable as exc:
+            typer.echo(
+                f"Warning: could not list {repo} ({exc}) — skipping --hf-file validation.",
+                err=True,
+            )
+            files = []
+            listing_available = False
+        gguf_files = [
+            str(f.get("path", ""))
+            for f in files
+            if isinstance(f, dict)
+            and f.get("type") == "file"
+            and str(f.get("path", "")).lower().endswith(".gguf")
+        ]
+        if listing_available and not gguf_files:
+            raise typer.BadParameter(
+                f"{repo} contains no GGUF files.", param_hint="--hf-file"
+            )
+        if gguf_files and hf_file not in gguf_files:
+            available = "\n  ".join(gguf_files[:20])
+            more = f"\n  ... ({len(gguf_files) - 20} more)" if len(gguf_files) > 20 else ""
+            raise typer.BadParameter(
+                f"'{hf_file}' not found in {repo}. Available GGUF files:\n  {available}{more}",
+                param_hint="--hf-file",
+            )
+
+    else:
+        if runtime != "host" or hf_repo or hf_file:
+            raise typer.BadParameter("--model-path requires host runtime and no HF metadata")
+        repo = Path(model_path).stem
+        _validate_port(port)
+        _validate_gpu_id(gpu_id)
 
     # Auto-derive name: <repo-tail-without-GGUF>, lowercased + safe chars.
     if not name:
@@ -1023,7 +1154,8 @@ def _quick_setup_llamacpp(
         src = l_load_config(copy_config_from)
         params.update(src.params)
         disabled_params = dict(src.disabled_params)
-    params["model-file"] = hf_file
+    if not model_path:
+        params["model-file"] = hf_file
 
     def _set_int(key: str, raw: str, *, param_hint: str) -> None:
         if not raw:
@@ -1079,6 +1211,7 @@ def _quick_setup_llamacpp(
         l_save_config(config)
         profile_store.create_profile(
             profile_store.StoredProfile(
+                runtime=runtime, server_binary=server_binary, model_path=model_path,
                 name=final_name,
                 backend="llamacpp",
                 container_name=final_name,
@@ -1086,7 +1219,7 @@ def _quick_setup_llamacpp(
                 gpu_id=gpu_id,
                 config_name=final_name,
                 model_file=hf_file,
-                hf_repo=repo,
+                hf_repo=repo if not model_path else "",
                 hf_file=hf_file,
             )
         )

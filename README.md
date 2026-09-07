@@ -20,13 +20,13 @@ vLLM for HF Transformers. llama.cpp for GGUF.
 <br/>
 **Two different toolchains, two different configs, two different terminals.**
 <br/><br/>
-llmux unifies both under a single Textual dashboard backed by Docker Compose.
+llmux unifies both under a single Textual dashboard. Run engines in Docker Compose, or use your own host-installed llama-server.
 <br/>
 **Pick a profile, press Enter &mdash; whichever engine it belongs to just runs.**
 
 <br/>
 
-<sub>Linux · NVIDIA GPU · Docker. No macOS, AMD/ROCm, or CPU-only yet.</sub>
+<sub>Linux. Docker engines use NVIDIA GPUs; host llama.cpp uses your installed build, including CPU-only configurations.</sub>
 
 <br/>
 
@@ -35,6 +35,39 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 </div>
 
 <br/>
+
+## This fork
+
+This fork adds native host `llama-server` profiles alongside the original Docker
+workflow: custom host binaries, local GGUF and companion-asset cataloging, and
+embedded MTP speculative decoding. vLLM remains Docker-only.
+
+The goal is to keep this fork synchronized with the
+[upstream llmux project](https://github.com/Changroro/llmux) while carrying
+these host llama.cpp additions. Push changes to this fork only; do not push to
+the upstream repository.
+
+<br/>
+
+## Host llama.cpp
+
+You can select `runtime: host` per llama.cpp profile and point `server_binary` at
+an existing Linux `llama-server`. Local GGUF files and Hugging Face downloads work
+without Docker. Existing profiles default to Docker; vLLM remains Docker-only.
+
+```bash
+uv run llmux profile quick-setup --backend llamacpp --runtime host \
+  --name local-model --server-binary /usr/local/bin/llama-server \
+  --model-path /srv/models/model.gguf
+uv run llmux up local-model
+uv run llmux ps --runtime host --json
+uv run llmux logs local-model
+uv run llmux down local-model
+```
+
+Choose **Host (Linux)** in the TUI's profile or quick-setup form for the same flow.
+See [host runtime setup and lifecycle](docs/host-runtime.md) for custom flags,
+the read-only local asset library, CPU mode, cache settings, and process ownership.
 
 ## Demos
 

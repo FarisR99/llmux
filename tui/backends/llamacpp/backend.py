@@ -180,6 +180,14 @@ class Profile:
     model_file: str = ""
     hf_repo: str = ""
     hf_file: str = ""
+    runtime: str = "docker"
+    server_binary: str = "llama-server"
+    model_path: str = ""
+    mmproj_path: str = ""
+    draft_model_path: str = ""
+    draft_type: str = ""
+    mtp_n: int = 0
+    chat_template_path: str = ""
     image_tag: str = ""
     env_vars: dict[str, str] = field(default_factory=dict)
     downloaded: bool = False
@@ -219,6 +227,14 @@ def _to_profile(stored: profile_store.StoredProfile) -> Profile:
         model_file=stored.model_file,
         hf_repo=stored.hf_repo,
         hf_file=stored.hf_file,
+        runtime=stored.runtime,
+        server_binary=stored.server_binary,
+        model_path=stored.model_path,
+        mmproj_path=stored.mmproj_path,
+        draft_model_path=stored.draft_model_path,
+        draft_type=stored.draft_type,
+        mtp_n=stored.mtp_n,
+        chat_template_path=stored.chat_template_path,
         image_tag=stored.image_tag,
         env_vars=dict(stored.env_vars),
     )
@@ -235,6 +251,14 @@ def _to_stored(profile: Profile) -> profile_store.StoredProfile:
         model_file=profile.model_file,
         hf_repo=profile.hf_repo,
         hf_file=profile.hf_file,
+        runtime=profile.runtime,
+        server_binary=profile.server_binary,
+        model_path=profile.model_path,
+        mmproj_path=profile.mmproj_path,
+        draft_model_path=profile.draft_model_path,
+        draft_type=profile.draft_type,
+        mtp_n=profile.mtp_n,
+        chat_template_path=profile.chat_template_path,
         image_tag=profile.image_tag,
         env_vars=dict(profile.env_vars),
     )
@@ -302,7 +326,19 @@ def list_profiles(running: set[str] | None = None) -> list[Profile]:
                 p.model_size_gb = round(
                     sum(path.stat().st_size for path in shard_paths) / 1024**3, 1
                 )
-        p.running = p.container_name in running_containers
+        if p.runtime == "host":
+            from .host_process import status
+            p.running = status(p.name)["running"]
+            if p.model_path:
+                from .host_runtime import model_paths
+                try:
+                    model, _ = model_paths(p, {})
+                    p.downloaded = True
+                    p.model_size_gb = round(Path(model).stat().st_size / 1024**3, 1)
+                except ValueError:
+                    pass
+        else:
+            p.running = p.container_name in running_containers
         result.append(p)
     return result
 

@@ -19,10 +19,7 @@ CONFIG_DIR = ROOT / "config" / "llamacpp"
 RUNTIME_DIR = ROOT / ".runtime" / "llamacpp"
 
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-_MANAGED_FLAGS = frozenset(
-    {"--host", "--port", "--webui", "--no-webui", "--metrics"}
-)
-
+from tui.backends.llamacpp.command import render_command  # noqa: E402
 
 def _validate_name(name: str, kind: str) -> str:
     if not name or not _SAFE_NAME.match(name) or ".." in name:
@@ -31,106 +28,6 @@ def _validate_name(name: str, kind: str) -> str:
         )
     return name
 
-
-def render_command(
-    cfg: dict,
-    *,
-    model_file: str = "",
-    hf_repo: str = "",
-    hf_file: str = "",
-) -> list[str]:
-    args: list[str] = [
-        "--host", "0.0.0.0", "--port", "8080", "--no-webui", "--metrics",
-    ]
-
-    configured_model_file = cfg.pop("model-file", "")
-    if configured_model_file is not None and not isinstance(configured_model_file, str):
-        raise ValueError(
-            "config key 'model-file' must be a string; "
-            f"got {type(configured_model_file).__name__}"
-        )
-    resolved_file = (hf_file or configured_model_file or model_file).strip()
-    resolved_repo = hf_repo.strip()
-    if not resolved_repo:
-        raise ValueError(
-            "hf_repo is empty — set profile.hf_repo so llama-server can `-hf` download"
-        )
-    if not resolved_file:
-        raise ValueError("hf_file / model_file is empty — need a specific .gguf filename")
-    args.extend(["-hf", resolved_repo])
-    args.extend(["-hff", resolved_file])
-    cfg.pop("model-file", None)
-
-    for key in ("no-webui", "webui", "metrics", "host", "port"):
-        if key in cfg:
-            print(
-                f"warning: config key '{key}' is managed by llmux and was ignored",
-                file=sys.stderr,
-            )
-            cfg.pop(key, None)
-
-    override_tensors = _string_list(
-        cfg.pop("override-tensors", None), "override-tensors"
-    )
-    extra_args_value = cfg.pop("extra-args", None)
-    if isinstance(extra_args_value, str):
-        extra_args = shlex.split(extra_args_value)
-    else:
-        extra_args = _string_list(extra_args_value, "extra-args")
-    _validate_extra_args(extra_args)
-
-    _BOOL_VALUE_FLAGS = {"flash-attn"}
-
-    for key, value in cfg.items():
-        if not isinstance(key, str):
-            raise ValueError(
-                f"config keys must be strings; got {type(key).__name__}"
-            )
-        flag = f"--{key}"
-        if isinstance(value, bool):
-            if key in _BOOL_VALUE_FLAGS:
-                args.extend([flag, "on" if value else "off"])
-            elif value:
-                args.append(flag)
-        elif isinstance(value, list):
-            for item in value:
-                args.extend([flag, _scalar_text(item, key)])
-        elif value is None:
-            continue
-        else:
-            args.extend([flag, _scalar_text(value, key)])
-
-    for pattern in override_tensors:
-        args.extend(["-ot", str(pattern)])
-
-    args.extend(str(a) for a in extra_args)
-    return args
-
-
-def _scalar_text(value: object, key: str) -> str:
-    if not isinstance(value, (str, int, float, bool)):
-        raise ValueError(
-            f"config key '{key}' must be a scalar or list of scalar values; "
-            f"got {type(value).__name__}"
-        )
-    return str(value)
-
-
-def _string_list(value: object, key: str) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-        raise ValueError(f"{key} must be a string or a list of strings")
-    return value
-
-
-def _validate_extra_args(extra_args: list[str]) -> None:
-    for token in extra_args:
-        option = token.split("=", 1)[0]
-        if option in _MANAGED_FLAGS:
-            raise ValueError(f"extra-args cannot override llmux-managed option {option}")
 
 
 def main() -> int:

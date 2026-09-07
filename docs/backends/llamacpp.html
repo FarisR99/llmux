@@ -50,12 +50,33 @@
         The llama.cpp backend serves <strong>GGUF models</strong> through <code>llama-server</code>. It is the right choice for quantized inference (Q4/Q5/Q8 and friends), running large models that only fit with CPU/GPU layer offload, and MoE models whose experts can be pushed to system RAM.
       </p>
       <p>
-        llmux never installs llama.cpp on your host — every profile runs in the official <code>ghcr.io/ggml-org/llama.cpp:server-cuda</code> container image (or one you built from source). llmux renders the Compose files, injects the <code>llama-server</code> command, streams logs, and validates the result.
+        Each profile chooses <code>runtime: docker</code> (the default) or <code>runtime: host</code>. Docker uses the official image or your custom image; host mode uses an existing Linux llama-server installation. Both support preparation, startup, shutdown, logs, and monitoring.
       </p>
     </div>
 
+    <h2 id="host-runtime">Host runtime</h2>
+    <p>Select <strong>Host (Linux)</strong> in the profile or quick-setup form, or create it from the CLI:</p>
+    <pre data-lang="bash"><code>uv run llmux profile quick-setup --backend llamacpp --runtime host \
+  --name local-model --server-binary /usr/local/bin/llama-server \
+  --model-path /srv/models/model.gguf
+uv run llmux prepare local-model
+uv run llmux up local-model
+uv run llmux ps --runtime host --json
+uv run llmux logs local-model
+uv run llmux down local-model</code></pre>
+    <ul>
+      <li>Requires Linux with pidfd support (kernel 5.3+). No Docker or systemd is required.</li>
+      <li><code>server_binary</code> is a path or command on PATH. Custom YAML flags and profile environment variables, including library paths, are supported.</li>
+      <li>Choose <code>model_path</code> for local GGUFs, or <code>hf_repo</code> and <code>hf_file</code> for Docker-free Hugging Face downloads. Split shards and offline cached snapshots are supported.</li>
+      <li>Host mode binds to localhost at the profile port. Set <code>n-gpu-layers: 0</code> for CPU inference; <code>gpu_id</code> otherwise controls CUDA visibility.</li>
+      <li>The detached server survives CLI/TUI exit. Logs rotate under <code>.runtime/llamacpp/host/&lt;profile&gt;/</code>. There is no automatic crash or boot restart.</li>
+      <li>Shutdown verifies process identity, sends SIGTERM, and escalates after 30 seconds. Stop a profile before switching runtime or changing host launch settings.</li>
+      <li><code>config flags --profile NAME</code> inspects the installed binary. Docker image/build options do not apply to host profiles.</li>
+    </ul>
+    <p>The remaining container and image sections describe <code>runtime: docker</code>.</p>
+
     <h2 id="how-a-llamacpp-profile-starts">How a llama.cpp profile starts</h2>
-    <p>When you start a llama.cpp profile, llmux runs this pipeline:</p>
+    <p>When you start a Docker llama.cpp profile, llmux runs this pipeline:</p>
     <ol>
       <li><strong><code>.env.common</code> check</strong> — refuses to start if <code>.env.common</code> is missing.</li>
       <li><strong>Profile lookup</strong> — the profile must exist under <code>llamacpp/</code> in <code>profiles.yaml</code>.</li>

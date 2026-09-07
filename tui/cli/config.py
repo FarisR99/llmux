@@ -543,6 +543,18 @@ def list_flags(
         stored = profile_store.load_profile(profile, backend)
         if stored is None:
             raise typer.BadParameter(f"profile not found: {profile}", param_hint="--profile")
+        if stored.runtime == "host":
+            from tui.backends.llamacpp.host_runtime import flags as host_flags
+            try:
+                flags = sorted(run_async(host_flags(stored)))
+            except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                typer.echo(f"flag discovery failed: {exc}", err=True)
+                raise typer.Exit(code=1) from exc
+            if json_out:
+                emit_json({"backend": backend, "runtime": "host", "executable": stored.server_binary, "flags": flags})
+            else:
+                emit_table([{"backend": backend, "flag": flag} for flag in flags], columns=["backend", "flag"])
+            return
         image = stored.image_tag
 
     backend = backend or "vllm"

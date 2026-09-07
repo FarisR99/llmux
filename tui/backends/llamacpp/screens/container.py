@@ -241,6 +241,10 @@ class ContainerUpScreen(Screen):
                 yield Button(t("Cancel", "취소"), variant="default", id="cancel-btn")
 
     def on_mount(self) -> None:
+        if self._profile.runtime == "host":
+            self.query_one("#title-label", Static).update(t("Start host llama-server", "호스트 llama-server 시작"))
+            self.query_one("#version-scroll").display = False
+            return
         self._refresh_dev_label()
         self._fetch_gpu_info()
         try:
@@ -323,6 +327,9 @@ class ContainerUpScreen(Screen):
         self.app.pop_screen()
 
     def action_confirm_start(self) -> None:
+        if self._profile.runtime == "host":
+            self._do_start()
+            return
         try:
             if str(self.query_one("#version-scroll").styles.display) == "none":
                 return
@@ -393,6 +400,9 @@ class ContainerUpScreen(Screen):
         elif selected_id != VER_PINNED:
             use_default_image = True
 
+        if self._profile.runtime == "host":
+            use_dev = use_default_image = False
+            tag = repo_url = branch = ""
         try:
             conflict = await check_port_conflict(self._profile)
         except RuntimeError as exc:
@@ -419,7 +429,7 @@ class ContainerUpScreen(Screen):
             self.query_one("#start-btn").styles.display = "none"
             status = self.query_one("#startup-status", Static)
             log_widget = self.query_one("#startup-log", RichLog)
-            status.update(t("[bold]Starting container...[/bold]", "[bold]컨테이너 시작 중...[/bold]"))
+            status.update(t("[bold]Starting server...[/bold]", "[bold]컨테이너 시작 중...[/bold]"))
         except Exception:
             return
 
@@ -444,14 +454,17 @@ class ContainerUpScreen(Screen):
             if rc == 0:
                 status.update(
                     t(
-                        "[green bold]Container started. Logs: (Esc/q to close)[/green bold]",
+                        "[green bold]Server started. Logs: (Esc/q to close)[/green bold]",
                         "[green bold]컨테이너 시작됨. 로그: (Esc/q 로 닫기)[/green bold]",
                     )
                 )
                 try:
-                    async for line in backend.stream_logs(
-                        self._profile.container_name
-                    ):
+                    if self._profile.runtime == "host":
+                        from tui.backends.llamacpp.host_process import logs
+                        stream = logs(self.profile_name)
+                    else:
+                        stream = backend.stream_logs(self._profile.container_name)
+                    async for line in stream:
                         log_widget.write(backend.strip_ansi(line))
                 except Exception as exc:
                     log_widget.write(t(f"Log stream error: {exc}", f"로그 스트림 오류: {exc}"))

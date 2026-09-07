@@ -21,6 +21,9 @@ defaults:
   llamacpp:
     port: 8080
     gpu_id: "0"
+    # Host-only local asset catalog; no files are moved or downloaded.
+    # library_roots:
+    #   - /srv/llama-cpp
 
 profiles:
   # ── vllm example ────────────────────────────────────────────
@@ -49,3 +52,25 @@ profiles:
     model_file: gemma-3-4b-it-q4_k_m.gguf  # used for download and as config fallback
     hf_repo: unsloth/gemma-3-4b-it-GGUF
     hf_file: gemma-3-4b-it-q4_k_m.gguf
+
+  # Host llama.cpp (Linux). Uncomment and set paths to use your own build.
+  # Docker is the default when runtime is omitted; vLLM is Docker-only.
+  # - name: custom-host
+  #   backend: llamacpp
+  #   runtime: host
+  #   server_binary: /usr/local/bin/llama-server
+  #   model_path: /srv/models/model.gguf
+  #   port: 8081
+  #   config_name: custom-host
+  #   gpu_id: "0"
+  #   env_vars:
+  #     LD_LIBRARY_PATH: /opt/custom-llama/lib
+  # For HF downloads, replace model_path with hf_repo and hf_file.
+  # defaults.llamacpp may also set runtime and server_binary.
+  # Optional explicit local companion assets for multimodal/speculative models:
+  #   mmproj_path: /srv/llama-cpp/mmproj/model.gguf
+  #   draft_model_path: /srv/llama-cpp/mtp/model.gguf
+  #   draft_type: draft-mtp
+  #   # Embedded MTP needs no draft_model_path; optional MTP-n limit:
+  #   # mtp_n: 3
+  #   chat_template_path: /srv/llama-cpp/chat-templates/qwen3.jinja

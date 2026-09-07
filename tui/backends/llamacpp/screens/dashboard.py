@@ -62,9 +62,9 @@ class ActionModal(ModalScreen[str]):
 
         options: list[Option] = []
         if running:
-            options.append(Option(t("■ Stop Container", "■ 컨테이너 중지"), id="stop"))
+            options.append(Option(t("■ Stop Server", "■ 서버 중지"), id="stop"))
         else:
-            options.append(Option(t("▶ Start Container", "▶ 컨테이너 시작"), id="start"))
+            options.append(Option(t("▶ Start Server", "▶ 서버 시작"), id="start"))
             options.append(
                 Option(t("⬇ Prepare (download only)", "⬇ 준비 (다운로드만)"), id="prepare")
             )
@@ -101,9 +101,10 @@ class LogViewer(ModalScreen[None]):
         Binding("f", "toggle_follow", t("Follow on/off", "자동 스크롤")),
     ]
 
-    def __init__(self, container_name: str) -> None:
+    def __init__(self, container_name: str, *, host: bool = False) -> None:
         super().__init__()
         self.container_name = container_name
+        self.host = host
 
     def compose(self) -> ComposeResult:
         with Vertical(id="log-container"):
@@ -132,7 +133,12 @@ class LogViewer(ModalScreen[None]):
     async def _stream(self) -> None:
         log = self.query_one("#log-body", RichLog)
         try:
-            async for line in backend.stream_logs(self.container_name, tail=200):
+            if self.host:
+                from tui.backends.llamacpp.host_process import logs
+                stream = logs(self.container_name, tail=200)
+            else:
+                stream = backend.stream_logs(self.container_name, tail=200)
+            async for line in stream:
                 log.write(backend.strip_ansi(line))
         except Exception as exc:  # pragma: no cover
             log.write(t(f"[log stream error] {exc}", f"[로그 스트림 오류] {exc}"))

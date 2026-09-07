@@ -53,26 +53,9 @@ def _toggle_lang() -> None:
 
 
 async def _running_rows() -> tuple[list[DashboardRow], list[str]]:
-    from tui.backends.llamacpp.adapter import LlamacppAdapter
-    from tui.backends.vllm.adapter import VllmAdapter
-
-    from tui.common.i18n import t
-
-    errors: list[str] = []
-    try:
-        running = await common_docker.running_container_names()
-    except Exception as exc:
-        return [], [t(f"Docker status scan failed: {exc}",
-                      f"Docker 상태 스캔 실패: {exc}")]
-    rows: list[DashboardRow] = []
-    for adapter in (VllmAdapter(), LlamacppAdapter()):
-        label = type(adapter).__name__.replace("Adapter", "")
-        try:
-            rows.extend(adapter.rows(running))
-        except Exception as exc:
-            errors.append(t(f"{label} scan failed: {exc}",
-                            f"{label} 스캔 실패: {exc}"))
-    return [r for r in rows if r.running], errors
+    from tui.common.runtime import dashboard_rows
+    rows, errors = await dashboard_rows()
+    return [row for row in rows if row.running], errors
 
 
 async def sample_entries(

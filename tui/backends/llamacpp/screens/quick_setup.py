@@ -1,6 +1,7 @@
 """Quick Setup — HF repo URL → GGUF 선택 → profile + config 자동 생성."""
 
 from __future__ import annotations
+from pathlib import Path
 
 import re
 from typing import Any
@@ -160,6 +161,23 @@ class QuickSetupScreen(ModalScreen[str]):
         with Vertical():
             yield Static(t("Quick Setup — HF repo → profile + config", "빠른 설정 — HF repo → profile + config"), classes="title")
             with VerticalScroll():
+                yield Label(t("Runtime", "실행 방식"))
+                yield Select([("Docker", "docker"), ("Host (Linux)", "host")],
+                             value=str(profile_store.effective_defaults("llamacpp")["runtime"]), allow_blank=False, id="runtime-select")
+                yield Label(t("Host server binary", "호스트 서버 실행 파일"))
+                yield Input(value=str(profile_store.effective_defaults("llamacpp")["server_binary"]), id="binary-input")
+                yield Label(t("Local GGUF path (host; leave HF fields empty)", "로컬 GGUF 경로 (호스트; HF 필드는 비워 두세요)"))
+                yield Input(id="model-path-input")
+                yield Label(t("Projector GGUF (optional, host)", "프로젝터 GGUF (선택, 호스트)"))
+                yield Input(id="mmproj-path-input")
+                yield Label(t("Draft GGUF (optional, host)", "드래프트 GGUF (선택, 호스트)"))
+                yield Input(id="draft-path-input")
+                yield Label(t("Draft type (optional; e.g. draft-mtp)", "드래프트 유형 (선택; 예: draft-mtp)"))
+                yield Input(id="draft-type-input")
+                yield Label(t("Embedded MTP n (optional; server default when blank)", "내장 MTP n (선택; 비우면 서버 기본값)"))
+                yield Input(id="mtp-n-input")
+                yield Label(t("Jinja template path (optional, host)", "Jinja 템플릿 경로 (선택, 호스트)"))
+                yield Input(id="template-path-input")
                 yield Label(t("HuggingFace repo (e.g. unsloth/Qwen3-30B-A3B-GGUF)", "HuggingFace repo (예: unsloth/Qwen3-30B-A3B-GGUF)"))
                 yield Input(placeholder=t("org/repo-GGUF or URL", "org/repo-GGUF 또는 URL"), id="repo-input")
                 yield Button(t("Fetch files", "파일 가져오기"), id="fetch-btn")
@@ -427,6 +445,14 @@ class QuickSetupScreen(ModalScreen[str]):
 
     @on(Button.Pressed, "#create-btn")
     def on_create(self) -> None:
+        runtime = str(self.query_one("#runtime-select", Select).value)
+        binary = self._get("binary-input") or "llama-server"
+        model_path = self._get("model-path-input")
+        mmproj_path = self._get("mmproj-path-input")
+        draft_model_path = self._get("draft-path-input")
+        draft_type = self._get("draft-type-input")
+        mtp_n_raw = self._get("mtp-n-input")
+        chat_template_path = self._get("template-path-input")
         repo = _normalize_repo(self.query_one("#repo-input", Input).value)
         gguf_select = self.query_one("#gguf-select", Select)
         gguf_file = (
@@ -449,7 +475,23 @@ class QuickSetupScreen(ModalScreen[str]):
         flash_attn = self.query_one("#flash-attn-switch", Switch).value
         jinja = self.query_one("#jinja-switch", Switch).value
 
-        if not repo or not _REPO_RE.match(repo):
+        if (model_path or mmproj_path or draft_model_path or draft_type or mtp_n_raw or chat_template_path) and runtime != "host":
+            self.notify(t("Local assets require the host runtime", "로컬 자산에는 호스트 실행 방식이 필요합니다"), severity="error")
+            return
+        try:
+            mtp_n = int(mtp_n_raw or "0")
+            if mtp_n < 0:
+                raise ValueError
+        except ValueError:
+            self.notify(t("Embedded MTP n must be a non-negative integer", "내장 MTP n은 0 이상의 정수여야 합니다"), severity="error")
+            return
+        if mtp_n and draft_type != "draft-mtp":
+            self.notify(t("Embedded MTP n requires draft type draft-mtp", "내장 MTP n에는 draft-mtp 유형이 필요합니다"), severity="error")
+            return
+        if model_path and (repo or gguf_file):
+            self.notify(t("Choose a local host GGUF OR HF metadata", "로컬 호스트 GGUF 또는 HF 정보 중 하나를 선택하세요"), severity="error")
+            return
+        if not model_path and (not repo or not _REPO_RE.match(repo)):
             self.notify(t("A valid HF repo is required", "유효한 HF repo 필요"), severity="error")
             return
         if self._last_repo and repo != self._last_repo:
@@ -461,10 +503,10 @@ class QuickSetupScreen(ModalScreen[str]):
                 severity="error",
             )
             return
-        if not gguf_file:
+        if not gguf_file and not model_path:
             self.notify(t("Select a GGUF file (after Fetch)", "GGUF 파일 선택 필요 (Fetch 후)"), severity="error")
             return
-        file_error = hf_file_error(gguf_file)
+        file_error = hf_file_error(gguf_file) if not model_path else ""
         if file_error:
             self.notify(file_error, severity="error")
             return
@@ -479,7 +521,7 @@ class QuickSetupScreen(ModalScreen[str]):
             return
 
         if not name_raw:
-            base = repo.rsplit("/", 1)[-1]
+            base = Path(model_path).stem if model_path else repo.rsplit("/", 1)[-1]
             base = re.sub(r"[-_]?GGUF$", "", base, flags=re.I)
             name_raw = re.sub(r"[^a-z0-9_-]+", "-", base.lower()).strip("-")
         if not name_raw:
@@ -566,12 +608,16 @@ class QuickSetupScreen(ModalScreen[str]):
                     disabled_params=disabled_params,
                 )
                 profile = Profile(
+                    runtime=runtime, server_binary=binary, model_path=model_path,
+                    mmproj_path=mmproj_path, draft_model_path=draft_model_path,
+                    draft_type=draft_type, chat_template_path=chat_template_path,
+                    mtp_n=mtp_n,
                     name=final_name,
                     container_name=final_name,
                     port=port_num,
                     gpu_id=gpu,
                     config_name=final_name,
-                    model_file=gguf_file,
+                    model_file=gguf_file if not model_path else "",
                     hf_repo=repo,
                     hf_file=gguf_file,
                 )

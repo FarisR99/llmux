@@ -55,6 +55,9 @@ def rename_config(
         raise ValueError("config rename accepts only one replacement source")
 
     with profile_store.storage_transaction():
+        for profile in profile_store.list_profiles(backend):
+            if profile_store.effective_config_name(profile) == old:
+                profile_store._require_host_stopped(profile)
         src = config_path(backend, old)
         dst = config_path(backend, new)
         if not src.exists():
@@ -79,6 +82,9 @@ def rename_config(
 
 def delete_config(backend: str, name: str) -> list[str]:
     with profile_store.storage_transaction():
+        for profile in profile_store.list_profiles(backend):
+            if profile_store.effective_config_name(profile) == name:
+                profile_store._require_host_stopped(profile)
         path = config_path(backend, name)
         if not path.exists():
             raise ValueError(f"config not found: {path}")

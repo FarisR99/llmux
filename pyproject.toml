@@ -1,7 +1,7 @@
 [project]
 name = "llmux"
 version = "2.8.1"
-description = "A terminal multiplexer for LLM servers — one TUI to orchestrate vLLM and llama.cpp Docker profiles side by side."
+description = "A terminal multiplexer for LLM servers — one TUI and CLI for Docker engines and host llama.cpp servers."
 requires-python = ">=3.10"
 authors = [{ name = "chbae", email = "chbae624@gmail.com" }]
 license = { text = "MIT" }
@@ -13,6 +13,7 @@ dependencies = [
     "hf-mem>=0.5.0",
     "typer>=0.25.1",
     "ruamel-yaml>=0.18",
+    "huggingface-hub>=0.27",
 ]
 
 [project.scripts]

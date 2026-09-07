@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import math
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -306,6 +307,7 @@ def disk(
 
 @app.command("env-check")
 def env_check(
+    profile: Annotated[str, typer.Option("--profile", help="Check one profile and its runtime requirements.")] = "",
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Validate `.env.common` and report key paths."""
@@ -313,7 +315,13 @@ def env_check(
     from tui.common.env import parse_env_file, validate_common_env
 
     common = PROJECT_ROOT / ".env.common"
-    ok, messages = validate_common_env(common)
+    from tui.common.system_operations import environment_status
+    from tui.common import profile_store
+    host_profiles = [p for p in profile_store.list_profiles("llamacpp") if p.runtime == "host"]
+    if profile or host_profiles:
+        ok, messages = environment_status(common, profile=profile)
+    else:
+        ok, messages = validate_common_env(common)
     warnings = [message for message in messages if message.startswith("Warning:")]
     findings = {
         "project_root": str(PROJECT_ROOT),
@@ -335,7 +343,7 @@ def env_check(
 
     print(f"Project root : {findings['project_root']}")
     print(f"Env common   : {findings['env_common_path']}")
-    if not findings["env_common_exists"]:
+    if not findings["env_common_exists"] and not ok:
         print("Status       : MISSING .env.common")
         raise typer.Exit(code=1)
 

@@ -248,6 +248,19 @@ def logs(
     """Stream container logs (Ctrl-C to stop following)."""
     bk = detect_backend(profile, override=backend)
     sp = profile_store.load_profile(profile, bk)
+    if sp.runtime == "host":
+        from tui.backends.llamacpp.host_process import logs as host_logs
+        async def show_host_logs():
+            async for line in host_logs(sp.name, tail=tail, follow=follow):
+                print(line)
+        try:
+            run_async(show_host_logs())
+        except KeyboardInterrupt:
+            raise typer.Exit(code=130)
+        except (OSError, ValueError, RuntimeError) as exc:
+            typer.echo(f"Host logs failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        return
     container_name = sp.container_name or sp.name
 
     runner = docker_logs_follow if follow else docker_logs_once
@@ -357,6 +370,7 @@ def stats(
         None, "--backend", "-b",
         help=f"Limit to one backend ({', '.join(BACKENDS)}); show all if omitted.",
     ),
+    runtime: Optional[str] = typer.Option(None, "--runtime", help="Filter docker or host profiles."),
     interval: float = typer.Option(
         2.0, "--interval", "-i", help="Seconds between /metrics samples."
     ),
@@ -374,6 +388,8 @@ def stats(
 
     if backend and backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+    if runtime not in (None, "docker", "host"):
+        raise typer.BadParameter("runtime must be docker or host", param_hint="--runtime")
     if interval <= 0:
         raise typer.BadParameter("interval must be > 0", param_hint="--interval")
     backends = [backend] if backend else list(BACKENDS)
@@ -386,26 +402,14 @@ def stats(
 
     tracker = ThroughputTracker()
 
+    status_errors: list[str] = []
     async def _running() -> list[dict]:
-        out: list[dict] = []
-        for bk in backends:
-            if bk == "vllm":
-                from tui.backends.vllm.backend_runtime import get_container_statuses
-            else:
-                from tui.backends.llamacpp.backend_runtime import (
-                    get_container_statuses,
-                )
-            try:
-                statuses = await get_container_statuses()
-            except RuntimeError as exc:
-                raise _StatusProbeFailed(f"{bk}: {exc}") from exc
-            for s in statuses:
-                if s.running and s.port:
-                    out.append(
-                        {"backend": bk, "profile": s.profile_name, "port": s.port}
-                    )
-        out.sort(key=lambda r: (r["backend"], r["profile"]))
-        return out
+        from tui.common.runtime import statuses as runtime_statuses
+        rows, errors = await runtime_statuses(backend, runtime)
+        status_errors[:] = errors
+        return [{"backend": bk, "profile": s.profile_name, "port": s.port,
+                 "runtime": getattr(s, "runtime", "docker")}
+                for bk, s in rows if s.running and s.port]
 
     async def _sample() -> list[dict]:
         rows: list[dict] = []
@@ -469,9 +473,13 @@ def stats(
                 baseline = False
                 if not rows:
                     _emit(rows)
+                    if status_errors:
+                        raise _StatusProbeFailed("; ".join(status_errors))
                     return
             else:
                 _emit(rows)
+                if status_errors:
+                    raise _StatusProbeFailed("; ".join(status_errors))
                 if once:
                     return
             await asyncio.sleep(interval)
@@ -496,6 +504,7 @@ def ps(
         None, "--backend", "-b",
         help=f"Limit to one backend ({', '.join(BACKENDS)}); show all if omitted.",
     ),
+    runtime: Optional[str] = typer.Option(None, "--runtime", help="Filter docker or host profiles."),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
     running_only: bool = typer.Option(
         False, "--running", "-r", help="Only show running containers."
@@ -504,54 +513,35 @@ def ps(
     """List profiles and their container status across backends."""
     if backend and backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
-    backends = [backend] if backend else list(BACKENDS)
-    rows = []
-
-    async def _collect():
-        for bk in backends:
-            if bk == "vllm":
-                from tui.backends.vllm.backend_runtime import get_container_statuses
-            else:
-                from tui.backends.llamacpp.backend_runtime import (
-                    get_container_statuses,
-                )
-
-            try:
-                statuses = await get_container_statuses()
-            except RuntimeError as exc:
-                raise _StatusProbeFailed(f"{bk}: {exc}") from exc
-            for s in statuses:
-                rows.append(
-                    {
-                        "backend": bk,
-                        "profile": s.profile_name,
-                        "container": s.container_name,
-                        "status": s.status_text,
-                        "running": s.running,
-                        "port": s.port,
-                        "gpu": s.gpu_id,
-                        "model": s.model,
-                    }
-                )
-
+    from tui.common.runtime import statuses as runtime_statuses
     try:
-        run_async(_collect())
-    except _StatusProbeFailed as exc:
-        typer.echo(f"container status probe failed — {exc}", err=True)
+        statuses, errors = run_async(runtime_statuses(backend, runtime))
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"status probe failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    rows = [{"backend": bk, "profile": s.profile_name, "container": s.container_name,
+             "status": s.status_text, "running": s.running, "port": s.port,
+             "gpu": s.gpu_id, "model": s.model,
+             "runtime": getattr(s, "runtime", "docker"), "pid": getattr(s, "pid", None),
+             "executable": getattr(s, "executable", ""), "exit_code": getattr(s, "exit_code", None),
+             "ready": getattr(s, "ready", getattr(s, "health", "") == "healthy"), "error": getattr(s, "error", "")}
+            for bk, s in statuses]
+    for error in errors:
+        typer.echo(f"status probe failed: {error}", err=True)
 
     if running_only:
         rows = [r for r in rows if r["running"]]
 
     if json_out:
         emit_json(rows)
-        return
+        raise typer.Exit(code=1 if errors else 0)
 
     emit_table(
         rows,
-        columns=["backend", "profile", "status", "port", "gpu", "container", "model"],
+        columns=["backend", "runtime", "profile", "status", "port", "gpu", "pid", "container", "model"],
     )
-
+    if errors:
+        raise typer.Exit(code=1)
 
 
 @app.command("render-env")

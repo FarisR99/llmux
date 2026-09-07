@@ -294,8 +294,17 @@ class ConfigFormScreen(ModalScreen[str | None]):
     @work(exclusive=False)
     async def _load_server_flags(self) -> None:
         try:
-            extracted = await extract_llama_server_flags(self._profile_image())
-        except RuntimeError as exc:
+            profiles = [load_profile(name) for name in list_profile_names()
+                        if load_profile(name).config_name == self._config_name]
+            host_profiles = [p for p in profiles if p.runtime == "host"]
+            if host_profiles:
+                if len({(p.runtime, p.server_binary) for p in profiles}) != 1:
+                    raise RuntimeError("Config uses multiple runtimes/binaries; use llmux config flags --profile NAME")
+                from tui.backends.llamacpp.host_runtime import flags
+                extracted = await flags(host_profiles[0])
+            else:
+                extracted = await extract_llama_server_flags(self._profile_image())
+        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
             self.notify(
                 t(
                     f"Could not inspect llama.cpp flags: {exc}",
@@ -469,7 +478,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
         old_name = self._original_name
         try:
-            running = await common_docker.running_container_names()
+            from tui.common.runtime import require_stopped
+            await require_stopped(config_store.referencing_profiles("llamacpp", old_name))
+            running = set()
         except Exception as exc:
             self.notify(
                 t(
@@ -749,7 +760,9 @@ class ConfigListScreen(Screen):
         from tui.common import config_store, docker as common_docker
 
         try:
-            running = await common_docker.running_container_names()
+            from tui.common.runtime import require_stopped
+            await require_stopped(config_store.referencing_profiles("llamacpp", old))
+            running = set()
         except Exception as exc:
             self.notify(
                 t(

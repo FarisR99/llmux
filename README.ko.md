@@ -20,7 +20,7 @@ vLLM은 HF Transformers, llama.cpp는 GGUF를 다룹니다.
 <br/>
 **엔진도, config도, 터미널도 따로 노는 두 세계입니다.**
 <br/><br/>
-llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습니다.
+llmux는 두 엔진을 Textual 대시보드 하나로 묶습니다. Docker Compose 또는 호스트에 설치한 llama-server를 사용할 수 있습니다.
 <br/>
 **프로필을 고르고 Enter만 누르면, 그 프로필의 엔진이 알아서 뜹니다.**
 
@@ -223,3 +223,23 @@ llmux는 컨트롤 계층입니다. 어려운 부분은 업스트림에 있습�
 **MIT License**
 
 </div>
+
+## 호스트 llama.cpp
+
+llama.cpp 프로필에서 `runtime: host`와 `server_binary`를 지정하면 Linux에
+설치한 커스텀 llama-server를 실행합니다. `model_path`로 로컬 GGUF를 선택하거나
+기존 `hf_repo`/`hf_file`로 Docker 없이 다운로드할 수 있습니다.
+기존 프로필의 기본값은 Docker이며, vLLM은 계속 Docker 전용입니다.
+TUI의 프로필/빠른 설정에서도 **Host (Linux)**를 선택할 수 있습니다.
+
+```bash
+uv run llmux profile quick-setup --backend llamacpp --runtime host \
+  --name local-model --server-binary /usr/local/bin/llama-server \
+  --model-path /srv/models/model.gguf
+uv run llmux up local-model
+uv run llmux ps --runtime host --json
+uv run llmux down local-model
+```
+
+CLI/TUI를 닫아도 서버는 계속 실행됩니다. 충돌이나 재부팅 후 자동 재시작은
+지원하지 않습니다. 자세한 내용은 [호스트 실행 안내](docs/host-runtime.md)를 참고하세요.

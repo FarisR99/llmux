@@ -15,3 +15,6 @@ class DashboardRow:
     detail: str
     gpu_id: str = ""
     raw: Any = None
+    runtime: str = "docker"
+    pid: int | None = None
+    status_text: str = ""

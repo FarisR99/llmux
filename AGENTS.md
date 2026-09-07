@@ -47,8 +47,8 @@ exception. Keep it that way: `run_command` returns `(1, "")` for a missing binar
 - **Python env: `uv`** — `uv sync`, `uv run llmux …`, `uv run pytest`.
 - **Commits: gitmoji + Conventional Commits** — `✨ feat(scope): subject`,
   `🐛 fix(...)`, `♻️ refactor(...)`, `📝 docs(...)`.
-- **Branching: `git worktree`** — feature work happens on `feat/<thing>`
-  branches in a worktree, never directly on `main`.
+- **Repository ownership:** Push only to the fork at `git@github.com:FarisR99/llmux.git`.
+  Never push to the [original upstream repository](https://github.com/Changroro/llmux).
 - **Parity rules:**
   - **TUI ⇄ CLI parity** — any feature added to one interface belongs in the other.
   - **vLLM ⇄ llama.cpp parity** — features should land on both backends unless the asymmetry is deliberate and documented.

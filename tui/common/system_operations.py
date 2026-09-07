@@ -66,8 +66,28 @@ async def build_dev_image(
     return await collect_events(events)
 
 
-def environment_status(common_env: Path) -> tuple[bool, list[str]]:
-    return validate_common_env(common_env)
+def environment_status(common_env: Path, *, profile: str = "") -> tuple[bool, list[str]]:
+    profiles = [p for bk in ("vllm", "llamacpp") for p in profile_store.list_profiles(bk)]
+    if profile:
+        profiles = [p for p in profiles if p.name == profile]
+        if not profiles:
+            return False, [f"Profile not found: {profile}"]
+    messages = []
+    ok = True
+    if not profiles or any(p.runtime == "docker" for p in profiles):
+        ok, messages = validate_common_env(common_env)
+    for p in profiles:
+        if p.runtime == "host":
+            from tui.backends.llamacpp.host_runtime import executable, model_paths
+            from tui.backends.llamacpp.backend import load_config
+            try:
+                binary = executable(p)
+                model_paths(p, load_config(p.config_name or p.name).params)
+                messages.append(f"Host {p.name}: {binary}")
+            except (OSError, ValueError, RuntimeError) as exc:
+                ok = False
+                messages.append(f"Error: host {p.name}: {exc}")
+    return ok, messages
 
 
 def render_backend_envs(backend: str) -> tuple[list[Path], list[str]]:

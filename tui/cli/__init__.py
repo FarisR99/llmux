@@ -294,6 +294,7 @@ def update_cmd(
 from tui.cli import config as _config  # noqa: E402
 from tui.cli import container as _container  # noqa: E402
 from tui.cli import image as _image  # noqa: E402
+from tui.cli import library as _library  # noqa: E402
 from tui.cli import profile as _profile  # noqa: E402
 from tui.cli import system as _system  # noqa: E402
 
@@ -301,6 +302,7 @@ app.add_typer(_container.app, name="container", help="Container lifecycle comman
 app.add_typer(_profile.app, name="profile", help="Profile CRUD + quick-setup.")
 app.add_typer(_config.app, name="config", help="Config (YAML) CRUD.")
 app.add_typer(_image.app, name="image", help="Docker image inventory + dev build.")
+app.add_typer(_library.app, name="library", help="Local host llama.cpp asset catalog.")
 app.add_typer(_system.app, name="system", help="System info & env validation.")
 # Top-level shortcuts for the most-used system commands.
 app.command("gpu", help="Print nvidia-smi summary (alias for `system gpu`).")(_system.gpu)
@@ -308,7 +310,7 @@ app.command("env-check", help="Validate .env.common (alias for `system env-check
     _system.env_check
 )
 # Top-level shortcuts so agents can write `llmux up <profile>` directly.
-app.command("up", help="Start a profile's container (alias for `container up`).")(
+app.command("up", help="Start a profile's server (alias for `container up`).")(
     _container.up
 )
 app.command(
@@ -316,13 +318,13 @@ app.command(
     help="Download the model + render runtime files without starting "
     "(alias for `container prepare`).",
 )(_container.prepare)
-app.command("down", help="Stop a profile's container (alias for `container down`).")(
+app.command("down", help="Stop a profile's server (alias for `container down`).")(
     _container.down
 )
-app.command("logs", help="Stream container logs (alias for `container logs`).")(
+app.command("logs", help="Stream server logs (alias for `container logs`).")(
     _container.logs
 )
-app.command("ps", help="List profiles and their container status (alias for `container ps`).")(
+app.command("ps", help="List profiles and their runtime status (alias for `container ps`).")(
     _container.ps
 )
 app.command(
@@ -331,11 +333,11 @@ app.command(
 )(_container.render_env)
 app.command(
     "bench",
-    help="Benchmark a running container's tok/s (alias for `container benchmark`).",
+    help="Benchmark a running server's tok/s (alias for `container benchmark`).",
 )(_container.benchmark)
 app.command(
     "stats",
-    help="Live tok/s from running containers' /metrics (alias for `container stats`).",
+    help="Live tok/s from running servers' /metrics (alias for `container stats`).",
 )(_container.stats)
 
 

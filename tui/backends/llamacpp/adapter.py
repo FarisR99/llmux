@@ -21,6 +21,10 @@ class LlamacppAdapter:
             model = alias.strip() if isinstance(alias, str) else ""
             if not model:
                 model = p.hf_repo or p.model_file or ""
+            host_state = None
+            if p.runtime == "host":
+                from .host_process import status
+                host_state = status(p.name)
             detail = ""
             if p.model_size_gb is not None:
                 detail = f"{p.model_size_gb:.1f} GB"
@@ -30,9 +34,12 @@ class LlamacppAdapter:
                 DashboardRow(
                     backend=self.name,
                     profile_name=p.name,
-                    container_name=p.container_name or p.name,
+                    container_name="" if p.runtime == "host" else p.container_name or p.name,
                     port=p.port or None,
-                    running=container_is_running(running, p.container_name or p.name),
+                    running=host_state["running"] if host_state else container_is_running(running, p.container_name or p.name),
+                    runtime=p.runtime,
+                    pid=host_state["pid"] if host_state else None,
+                    status_text=host_state["status"] if host_state else "",
                     model=model,
                     detail=detail,
                     gpu_id=p.gpu_id or "",

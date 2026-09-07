@@ -39,12 +39,17 @@ Backend = Literal["vllm", "llamacpp"]
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "vllm": {
+        "runtime": "docker",
         "port": 8000,
         "gpu_id": "0",
         "tensor_parallel_size": 1,
         "enable_lora": False,
     },
     "llamacpp": {
+        "runtime": "docker",
+        "server_binary": "llama-server",
+        "model_path": "",
+        "library_roots": [],
         "port": 8080,
         "gpu_id": "0",
     },
@@ -68,6 +73,7 @@ _SHARED_PROFILE_KEYS = frozenset(
         "config_name",
         "env_vars",
         "image_tag",
+        "runtime",
     }
 )
 _PROFILE_KEYS_BY_BACKEND = {
@@ -82,7 +88,10 @@ _PROFILE_KEYS_BY_BACKEND = {
         "extra_pip_packages",
     },
     "llamacpp": _SHARED_PROFILE_KEYS
-    | {"model_file", "hf_repo", "hf_file"},
+    | {
+        "model_file", "hf_repo", "hf_file", "server_binary", "model_path",
+        "mmproj_path", "draft_model_path", "draft_type", "mtp_n", "chat_template_path",
+    },
 }
 _PROTECTED_ENV_KEYS = frozenset(
     {
@@ -233,6 +242,14 @@ class StoredProfile:
     hf_repo: str = ""
     hf_file: str = ""
     image_tag: str = ""
+    runtime: str = "docker"
+    server_binary: str = "llama-server"
+    model_path: str = ""
+    mmproj_path: str = ""
+    draft_model_path: str = ""
+    draft_type: str = ""
+    mtp_n: int = 0
+    chat_template_path: str = ""
 
 
 def _load_yaml() -> dict:
@@ -489,6 +506,14 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
         hf_repo=merged.get("hf_repo", ""),
         hf_file=merged.get("hf_file", ""),
         image_tag=merged.get("image_tag", ""),
+        runtime=merged.get("runtime", "docker"),
+        server_binary=merged.get("server_binary", "llama-server"),
+        model_path=merged.get("model_path", ""),
+        mmproj_path=merged.get("mmproj_path", ""),
+        draft_model_path=merged.get("draft_model_path", ""),
+        draft_type=merged.get("draft_type", ""),
+        mtp_n=_as_int("mtp_n", merged.get("mtp_n", 0)),
+        chat_template_path=merged.get("chat_template_path", ""),
     )
     _validate_profile(profile)
     return profile
@@ -501,6 +526,39 @@ def _validate_profile(profile: StoredProfile) -> None:
         raise ValueError(
             f"invalid profile name {profile.name!r}: must match {_NAME_RE.pattern}"
         )
+    if profile.runtime not in ("docker", "host"):
+        raise ValueError("runtime must be docker or host")
+    if profile.backend == "vllm" and profile.runtime != "docker":
+        raise ValueError("vLLM supports only runtime=docker")
+    for key in (
+        "server_binary", "model_path", "mmproj_path", "draft_model_path",
+        "draft_type", "chat_template_path",
+    ):
+        value = getattr(profile, key)
+        if not isinstance(value, str) or any(ord(c) < 32 for c in value):
+            raise ValueError(f"{key} must be a string without control characters")
+    if not profile.server_binary.strip():
+        raise ValueError("server_binary cannot be empty")
+    host_assets = (
+        profile.model_path, profile.mmproj_path, profile.draft_model_path,
+        profile.draft_type, profile.mtp_n, profile.chat_template_path,
+    )
+    if profile.runtime == "docker" and (any(host_assets) or profile.server_binary != "llama-server"):
+        raise ValueError("host model paths and server_binary require runtime=host")
+    if profile.model_path and (profile.hf_repo or profile.hf_file or profile.model_file):
+        raise ValueError("choose model_path OR Hugging Face model metadata")
+    if profile.draft_model_path and not profile.model_path:
+        raise ValueError("draft_model_path requires a host model_path")
+    if profile.draft_type and not profile.draft_model_path and profile.draft_type != "draft-mtp":
+        raise ValueError("draft_type requires draft_model_path unless it is draft-mtp")
+    if profile.draft_type and profile.draft_type not in {
+        "draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "draft-dspark",
+    }:
+        raise ValueError("unsupported draft_type")
+    if type(profile.mtp_n) is not int or profile.mtp_n < 0:
+        raise ValueError("mtp_n must be a non-negative integer")
+    if profile.mtp_n and profile.draft_type != "draft-mtp":
+        raise ValueError("mtp_n requires draft_type=draft-mtp")
     container_name = profile.container_name or profile.name
     if not isinstance(container_name, str) or not _NAME_RE.fullmatch(container_name):
         raise ValueError(
@@ -538,6 +596,8 @@ def _validate_profile(profile: StoredProfile) -> None:
         for key, value in profile.env_vars.items()
     ):
         raise ValueError(f"profile {profile.name!r}: env_vars must map strings to strings")
+    if profile.runtime == "host" and "CUDA_VISIBLE_DEVICES" in profile.env_vars:
+        raise ValueError("CUDA_VISIBLE_DEVICES is managed by gpu_id in host profiles")
     protected = {
         key
         for key in profile.env_vars
@@ -652,6 +712,16 @@ def _profile_to_entry(
             out["hf_repo"] = profile.hf_repo
         if profile.hf_file:
             out["hf_file"] = profile.hf_file
+    if profile.runtime != defaults.get("runtime", "docker"):
+        out["runtime"] = profile.runtime
+    if profile.backend == "llamacpp":
+        for key, default in (
+            ("server_binary", "llama-server"), ("model_path", ""),
+            ("mmproj_path", ""), ("draft_model_path", ""),
+            ("draft_type", ""), ("mtp_n", 0), ("chat_template_path", ""),
+        ):
+            if getattr(profile, key) != defaults.get(key, default):
+                out[key] = getattr(profile, key)
     if profile.env_vars:
         out["env_vars"] = dict(profile.env_vars)
     if profile.image_tag:
@@ -810,10 +880,35 @@ def clone_profile(src: str, dst: str, backend: str) -> StoredProfile:
         return clone
 
 
+def _require_host_stopped(profile: StoredProfile | None) -> None:
+    if profile is not None and profile.runtime == "host":
+        from tui.backends.llamacpp.host_process import require_stopped
+        require_stopped(profile.name)
+
+
+def _require_runtime_change_stopped(current: StoredProfile, updated: StoredProfile) -> None:
+    if current.runtime == updated.runtime or current.runtime != "docker":
+        return
+    import subprocess
+    try:
+        probe = subprocess.run(["docker", "ps", "--format", "{{.Names}}"],
+                               capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"Cannot verify Docker profile is stopped before switching runtime: {exc}") from exc
+    if probe.returncode:
+        raise ValueError("Docker status probe failed; cannot switch runtime until stopped state is verified")
+    if (current.container_name or current.name) in probe.stdout.splitlines():
+        raise ValueError(f"Profile '{current.name}' is running in Docker; stop it before switching runtime")
+
+
 def _save_profile_unlocked(profile: StoredProfile) -> None:
     _validate_profile(profile)
     data = _load_yaml()
     existing_profiles = _validated_profiles(data)
+    for current in existing_profiles:
+        if (current.backend, current.name) == (profile.backend, profile.name) and current != profile:
+            _require_host_stopped(current)
+            _require_runtime_change_stopped(current, profile)
     effective_container = profile.container_name or profile.name
     for existing in existing_profiles:
         if (existing.backend, existing.name) == (profile.backend, profile.name):
@@ -889,6 +984,9 @@ def _replace_profile_unlocked(
 
     defaults = _backend_defaults(data, profile.backend)
     current = _to_profile(entry, defaults)
+    if current != profile:
+        _require_host_stopped(current)
+        _require_runtime_change_stopped(current, profile)
     if expected is not None and _profile_to_entry(
         current, defaults
     ) != _profile_to_entry(expected, defaults):
@@ -955,6 +1053,7 @@ def delete_profile(name: str, backend: str) -> bool:
 
 
 def _delete_profile_unlocked(name: str, backend: str) -> bool:
+    _require_host_stopped(load_profile(name, backend))
     data = _load_yaml()
     _validated_profiles(data)
     profiles = data.get("profiles", [])
@@ -998,6 +1097,7 @@ def delete_profile_with_config(
         )
         if target is None:
             return False
+        _require_host_stopped(target)
         config_name = effective_config_name(target)
         config_path = config_dir / f"{config_name}.yaml"
         shared = any(
@@ -1089,6 +1189,7 @@ def repoint_config_references(
                 or effective_config_name(profile) != old_config_name
             ):
                 continue
+            _require_host_stopped(profile)
             updated = replace(profile, config_name=new_config_name)
             entries[index] = _profile_to_entry(
                 updated,
@@ -1160,6 +1261,12 @@ def _env_line(key: str, value: Any) -> str:
 
 
 def _render_env_lines(profile: StoredProfile) -> list[str]:
+    if profile.runtime == "host":
+        values = {**profile.env_vars, "LLMUX_RUNTIME": "host", "LLAMA_PORT": profile.port,
+                  "CUDA_VISIBLE_DEVICES": profile.gpu_id, "SERVER_BINARY": profile.server_binary}
+        if profile.model_path:
+            values["MODEL_PATH"] = profile.model_path
+        return ["# Generated host runtime environment", *(_env_line(k, v) for k, v in values.items()), ""]
     lines: list[str] = [
         "# Auto-rendered from profiles.yaml — do not edit directly.",
         f"# Profile: {profile.name} ({profile.backend})",

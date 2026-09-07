@@ -81,6 +81,12 @@ class ContainerStatus:
     image: str = ""
     model: str = ""
     lora: bool = False
+    runtime: str = "docker"
+    pid: int | None = None
+    executable: str = ""
+    exit_code: int | None = None
+    ready: bool = False
+    error: str = ""
 
 
 def get_dev_build_defaults() -> tuple[str, str]:
@@ -298,6 +304,9 @@ async def _gpu_conflict_messages(profile: Profile) -> list[str]:
 
 
 async def check_port_conflict(profile: Profile) -> str | None:
+    if profile.runtime == "host":
+        from .host_runtime import port_conflict
+        return port_conflict(profile)
     port = str(profile.port)
     rc, out = await _docker_run(
         "docker", "ps", "--format", "{{.Names}}\t{{.Ports}}", timeout=10
@@ -335,13 +344,37 @@ async def check_port_conflict(profile: Profile) -> str | None:
     return None
 
 
-async def get_container_statuses() -> list[ContainerStatus]:
+async def get_container_statuses(*, runtime: str | None = None, partial: bool = False) -> list[ContainerStatus]:
     names = list_profile_names()
-    snapshots = await common_docker.container_snapshots(include_stopped=True)
+    names = [name for name in names if runtime is None or load_profile(name).runtime == runtime]
+    docker_names = [name for name in names if load_profile(name).runtime == "docker"]
+    snapshots = {}
+    probe_error = ""
+    if docker_names or (not names and runtime is None and not partial):
+        try:
+            snapshots = await common_docker.container_snapshots(include_stopped=True)
+        except RuntimeError as exc:
+            if not partial:
+                raise
+            probe_error = str(exc)
 
     statuses: list[ContainerStatus] = []
     for name in names:
         profile = load_profile(name)
+        if profile.runtime == "host":
+            from .host_runtime import get_status
+            try:
+                statuses.append(await get_status(profile))
+            except (OSError, ValueError, RuntimeError) as exc:
+                if not partial:
+                    raise RuntimeError(str(exc)) from exc
+                statuses.append(ContainerStatus(profile_name=name, container_name="", runtime="host",
+                                                status_text="unknown", error=str(exc)))
+            continue
+        if probe_error:
+            statuses.append(ContainerStatus(profile_name=name, container_name=profile.container_name,
+                                            status_text="unknown", error=probe_error))
+            continue
         snapshot = snapshots.get(profile.container_name)
         running = snapshot.running if snapshot is not None else False
         health = ""
@@ -643,6 +676,16 @@ async def stream_container_up(
         yield ("rc", 1)
         return
 
+    if getattr(stored, "runtime", "docker") == "host":
+        if use_dev or use_default_image or tag or pull or repo_url or branch:
+            yield ("log", "Error: Docker image/build options cannot be used with runtime=host")
+            yield ("rc", 2)
+            return
+        from .host_runtime import stream_up
+        async for event in stream_up(profile_name):
+            yield event
+        return
+
     if tag and not use_dev:
         error = dev_build.image_tag_error(tag)
         if error:
@@ -857,6 +900,12 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
         yield ("rc", 1)
         return
 
+    if getattr(stored, "runtime", "docker") == "host":
+        from .host_runtime import stream_prepare
+        async for event in stream_prepare(profile_name, max_workers=max_workers):
+            yield event
+        return
+
     ok, env_messages = validate_common_env(
         COMMON_ENV, require_downloader_image=True
     )
@@ -995,6 +1044,10 @@ async def container_down(profile_name: str) -> tuple[int, str]:
         profile = load_profile(profile_name)
     except Exception as exc:
         return 1, f"✗ '{profile_name}' runtime profile 로드 실패: {exc}"
+
+    if getattr(stored, "runtime", "docker") == "host":
+        from .host_runtime import down
+        return await down(profile_name)
 
     render_error = ""
     try:

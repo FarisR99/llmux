@@ -123,6 +123,10 @@ def emit_table(rows: Iterable[dict], columns: list[str]) -> None:
 
 async def gather_conflict_warnings(profile_name: str, backend: str) -> list[str]:
     """Return conflicts from a complete cross-backend pre-flight scan."""
+    sp = profile_store.load_profile(profile_name, backend)
+    if sp is not None and sp.runtime == "host":
+        from tui.backends.llamacpp.host_runtime import conflict_warnings
+        return await conflict_warnings(sp)
     from tui.backends.llamacpp.adapter import LlamacppAdapter
     from tui.backends.vllm.adapter import VllmAdapter
     from tui.common import docker as common_docker
