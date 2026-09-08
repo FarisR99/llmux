@@ -10,6 +10,7 @@ from tui.cli._runtime import (
     detect_backend,
     docker_logs_follow,
     docker_logs_once,
+    docker_logs_snapshot,
     emit_json,
     emit_table,
     gather_conflict_warnings,
@@ -244,9 +245,21 @@ def logs(
         True, "--follow/--no-follow", "-f/-F",
         help="Follow log output (default). Use --no-follow to print recent lines and exit.",
     ),
+    json_out: bool = typer.Option(
+        False, "--json", help="Emit a finite structured snapshot (requires --no-follow)."
+    ),
 ) -> None:
     """Stream container logs (Ctrl-C to stop following)."""
-    bk = detect_backend(profile, override=backend)
+    if json_out and follow:
+        emit_json({"status": "error", "error": {"code": "FINITE_SNAPSHOT_REQUIRED", "message": "--json requires --no-follow"}})
+        raise typer.Exit(code=2)
+    try:
+        bk = detect_backend(profile, override=backend)
+    except typer.BadParameter as exc:
+        if json_out:
+            emit_json({"status": "error", "error": {"code": "PROFILE_NOT_FOUND", "message": str(exc)}})
+            raise typer.Exit(code=2)
+        raise
     sp = profile_store.load_profile(profile, bk)
     if sp.runtime == "host":
         from tui.backends.llamacpp.host_process import logs as host_logs
@@ -254,14 +267,35 @@ def logs(
             async for line in host_logs(sp.name, tail=tail, follow=follow):
                 print(line)
         try:
+            if json_out:
+                lines: list[str] = []
+                async def collect_host_logs():
+                    async for line in host_logs(sp.name, tail=tail, follow=False):
+                        lines.append(line)
+                run_async(collect_host_logs())
+                emit_json({"status": "ok", "result": {"profile": sp.name, "backend": bk,
+                           "runtime": "host", "tail": tail, "availability": "available", "lines": lines}})
+                return
             run_async(show_host_logs())
         except KeyboardInterrupt:
             raise typer.Exit(code=130)
         except (OSError, ValueError, RuntimeError) as exc:
+            if json_out:
+                emit_json({"status": "error", "error": {"code": "LOGS_UNAVAILABLE", "message": str(exc)}})
+                raise typer.Exit(code=1)
             typer.echo(f"Host logs failed: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         return
     container_name = sp.container_name or sp.name
+
+    if json_out:
+        rc, lines, detail = run_async(docker_logs_snapshot(container_name, tail=tail))
+        if rc:
+            emit_json({"status": "error", "error": {"code": "LOGS_UNAVAILABLE", "message": detail or "docker logs failed"}})
+            raise typer.Exit(code=rc)
+        emit_json({"status": "ok", "result": {"profile": sp.name, "backend": bk,
+                   "runtime": "docker", "tail": tail, "availability": "available", "lines": lines}})
+        return
 
     runner = docker_logs_follow if follow else docker_logs_once
     try:
@@ -385,6 +419,7 @@ def stats(
     """Poll live token throughput from each running container."""
     import json as _json
     import time
+    from datetime import datetime, timezone
 
     if backend and backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
@@ -408,26 +443,33 @@ def stats(
         rows, errors = await runtime_statuses(backend, runtime)
         status_errors[:] = errors
         return [{"backend": bk, "profile": s.profile_name, "port": s.port,
-                 "runtime": getattr(s, "runtime", "docker")}
+                 "runtime": getattr(s, "runtime", "docker"),
+                 "ready": getattr(s, "ready", True)}
                 for bk, s in rows if s.running and s.port]
 
     async def _sample() -> list[dict]:
         rows: list[dict] = []
-        failures: list[str] = []
         targets = await _running()
         samples = await asyncio.gather(
             *(fetch_token_counters(t["port"]) for t in targets),
             return_exceptions=True,
         )
         now = time.monotonic()
+        sampled_at = datetime.now(timezone.utc).isoformat()
         for t, counters in zip(targets, samples):
             key = f"{t['backend']}:{t['profile']}"
+            base = {
+                **t, "sampled_at": sampled_at, "sample_interval_seconds": interval,
+                "prompt_tok_per_s": None, "generation_tok_per_s": None,
+            }
+            if not t["ready"]:
+                tracker.forget(key)
+                rows.append({**base, "availability": "not_ready", "error": "server is not ready"})
+                continue
             if isinstance(counters, MetricsUnavailableError):
                 tracker.forget(key)
                 detail = str(counters).strip() or "metrics endpoint unavailable"
-                failures.append(
-                    f"{t['backend']}/{t['profile']} (port {t['port']}): {detail}"
-                )
+                rows.append({**base, "availability": "unavailable", "error": detail})
                 continue
             if isinstance(counters, BaseException):
                 raise counters
@@ -436,15 +478,9 @@ def stats(
                 rate = None
             else:
                 rate = tracker.update(key, counters, now)
-            rows.append(
-                {
-                    **t,
-                    "prompt_tok_per_s": rate[0] if rate else None,
-                    "generation_tok_per_s": rate[1] if rate else None,
-                }
-            )
-        if failures:
-            raise _MetricsProbeFailed(failures)
+            rows.append({**base, "availability": "available", "error": "",
+                         "prompt_tok_per_s": rate[0] if rate else None,
+                         "generation_tok_per_s": rate[1] if rate else None})
         return rows
 
     def _emit(rows: list[dict]) -> None:
@@ -480,6 +516,9 @@ def stats(
                 _emit(rows)
                 if status_errors:
                     raise _StatusProbeFailed("; ".join(status_errors))
+                failures = [row["error"] for row in rows if row["availability"] == "unavailable"]
+                if failures:
+                    raise _MetricsProbeFailed(failures)
                 if once:
                     return
             await asyncio.sleep(interval)

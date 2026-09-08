@@ -86,7 +86,23 @@ llmux stats --runtime host --once --json
 `stats --json` writes one compact JSON array per tick (NDJSON). `--once` first
 collects a baseline, waits one interval, prints one rate tick, and exits. The
 records include `backend`, `profile`, `port`, `runtime`,
-`prompt_tok_per_s`, and `generation_tok_per_s`.
+`prompt_tok_per_s`, and `generation_tok_per_s`. Each record also contains
+`sampled_at` (UTC), `sample_interval_seconds`, `availability`, and `error`.
+`availability` is `available`, `not_ready`, or `unavailable`; unavailable
+observations retain their identity and null rates. A partial probe still writes
+the valid rows, then exits non-zero.
+
+For a finite, structured log result, request a snapshot explicitly:
+
+```bash
+llmux logs NAME --tail 200 --no-follow --json
+```
+
+This writes `{ "status": "ok", "result": { ... } }`, where `result` includes
+the profile identity, runtime, tail, availability, and `lines`. Errors use
+`{ "status": "error", "error": { "code", "message" } }`; the stable codes
+are `PROFILE_NOT_FOUND`, `FINITE_SNAPSHOT_REQUIRED`, and `LOGS_UNAVAILABLE`.
+JSON log snapshots never follow a stream.
 
 Do not use `llmux top` for machine integration. It is a terminal-rendered live
 monitor, not a JSON API. Query `ps`, `stats`, and the server's reported

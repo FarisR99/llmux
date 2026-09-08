@@ -211,6 +211,24 @@ async def docker_logs_once(container_name: str, *, tail: int) -> int:
     return proc.returncode or 0
 
 
+async def docker_logs_snapshot(container_name: str, *, tail: int) -> tuple[int, list[str], str]:
+    """Return a finite Docker log snapshot without writing it to the terminal."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "logs", "--tail", str(tail), container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return 127, [], "docker executable not found"
+    stdout, stderr = await proc.communicate()
+    return (
+        proc.returncode or 0,
+        stdout.decode("utf-8", errors="replace").splitlines(),
+        stderr.decode("utf-8", errors="replace").strip(),
+    )
+
+
 async def docker_logs_follow(container_name: str, *, tail: int) -> int:
     """Stream `docker logs -f` and return Docker's status."""
     try:
