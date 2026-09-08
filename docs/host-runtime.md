@@ -26,8 +26,10 @@ profiles:
 ```
 
 `server_binary` defaults to `llama-server` on `PATH`. Filesystem paths expand `~`;
-relative paths are relative to the llmux project root. The process also runs
-from that root. `defaults.llamacpp.runtime` and `defaults.llamacpp.server_binary`
+relative paths are relative to llmux's resolved data directory (normally
+`~/.local/share/llmux` for an installed CLI, or the checkout for legacy
+development use). The process also runs from that data directory.
+`defaults.llamacpp.runtime` and `defaults.llamacpp.server_binary`
 can set defaults for new profiles. Existing Docker profiles can explicitly set
 `runtime: docker` to override a host default.
 
@@ -131,7 +133,7 @@ cannot override these settings. Benchmarking and monitoring use the same HTTP
 endpoints as Docker profiles.
 
 A detached supervisor retains process identity, exit status, and rotating logs
-under `.runtime/llamacpp/host/<profile>/`. State is private to the current user;
+under the data directory's `.runtime/llamacpp/host/<profile>/`. State is private to the current user;
 credentials and raw launch arguments are not written into the state file.
 Logs rotate at 10 MiB with three backups and remain readable after shutdown.
 

@@ -158,6 +158,14 @@ for you:
 llmux
 ```
 
+An installed CLI keeps mutable profiles, configuration, protected environment
+settings, and generated runtime state in `~/.local/share/llmux` by default.
+Set `LLMUX_DATA_DIR` to use another data directory. `LLMUX_ROOT` is only for a
+source/development checkout; it retains legacy checkout-local state unless you
+also set `LLMUX_DATA_DIR`. Existing checkout state is never moved automatically:
+use `llmux data migrate` to preview a verified copy, then
+`llmux data migrate --execute --yes` after choosing `LLMUX_DATA_DIR`.
+
 The checkout stays a live git repo, so `git pull` in `~/.llmux` applies updates
 with no reinstall — and llmux checks GitHub for a newer release on **every**
 interactive run and offers to pull it for you. `llmux update` asks on demand
@@ -177,7 +185,9 @@ uv tool update-shell           # one-time: adds ~/.local/bin to PATH
 </details>
 
 > Prefer not to install globally? `uv run llmux` works from inside the repo. From
-> elsewhere, set `LLMUX_ROOT=/path/to/llmux`.
+> elsewhere, set `LLMUX_ROOT=/path/to/llmux`. For an installed CLI outside a
+> checkout, no `LLMUX_ROOT` is needed; use `LLMUX_DATA_DIR` only when overriding
+> the default user data location.
 
 > **Language:** the TUI is bilingual (English / Korean). It follows your system
 > locale by default; force one with `LLMUX_LANG=en` or `LLMUX_LANG=ko`.

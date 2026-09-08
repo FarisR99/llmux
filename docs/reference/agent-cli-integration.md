@@ -12,10 +12,24 @@ target llmux project's profiles. Use its documented JSON-capable commands and
 their exit codes as the API contract. Do not parse TUI or terminal-table output,
 and do not read `.runtime` state or environment files directly.
 
-The CLI resolves a project from its current directory when that directory is an
-llmux checkout. To intentionally target a different checkout, set `LLMUX_ROOT`
-to that project's root before invoking the command. Profiles and host runtime
-state are user-local; do not assume that another user sees or can manage them.
+The installed CLI separates immutable code assets from mutable data. Outside a
+checkout, mutable state defaults to `~/.local/share/llmux`; set
+`LLMUX_DATA_DIR` to intentionally target another data directory. `LLMUX_ROOT`
+means an llmux source/development checkout (code assets), and preserves its
+legacy behaviour of using that checkout for state unless `LLMUX_DATA_DIR` is
+also set. Profiles and host runtime state are user-local; do not assume that
+another user sees or can manage them.
+
+Inspect this resolution without reading files directly:
+
+```bash
+llmux data status --json
+llmux system env-check --json
+```
+
+The data directory contains `profiles.yaml`, `.env.common`, `config/`, and
+disposable `.runtime/` metadata. Relative profile paths are resolved from the
+data directory. Do not place code, Compose definitions, or scripts there.
 
 Examples below use an installed `llmux` command. A source-checkout workflow may
 substitute `uv run llmux`.
@@ -118,6 +132,19 @@ llmux prepare NAME
 llmux up NAME
 llmux down NAME
 ```
+
+To explicitly migrate legacy checkout state to a selected new data directory,
+first inspect the non-mutating plan and then run the confirmed copy:
+
+```bash
+LLMUX_DATA_DIR=/chosen/data llmux data migrate --json
+LLMUX_DATA_DIR=/chosen/data llmux data migrate --execute --yes --json
+```
+
+Migration copies and verifies only declarative/protected state; it never moves
+or deletes the legacy copy and deliberately excludes runtime locks, PID state,
+and logs. It refuses active managed host profiles or a non-empty destination.
+Rollback is to unset `LLMUX_DATA_DIR` (or set it back to the legacy checkout).
 
 `prepare` renders runtime files and obtains required weights without starting
 the server. `up` prepares and starts it; `down` stops it. Control profiles and
