@@ -46,6 +46,20 @@ def _profile_to_row(p: profile_store.StoredProfile) -> dict:
     }
 
 
+def _profile_detail(p: profile_store.StoredProfile) -> dict:
+    data = asdict(p)
+    data["container_name"] = p.container_name or p.name
+    data["env_vars"] = {
+        key: ({"set": True, "length": len(value)} if profile_store.sensitive_env_key(key) else value)
+        for key, value in data["env_vars"].items()
+    }
+    return data
+
+
+def _emit_profile_mutation(profile: profile_store.StoredProfile) -> None:
+    emit_json({"status": "ok", "result": {"profile": _profile_detail(profile)}})
+
+
 
 @app.command("list")
 def list_profiles(
@@ -81,16 +95,7 @@ def show_profile(
     """Show a profile's full record."""
     bk = detect_backend(name, override=backend)
     sp = profile_store.load_profile(name, bk)
-    data = asdict(sp)
-    data["container_name"] = sp.container_name or sp.name
-    data["env_vars"] = {
-        key: (
-            {"set": True, "length": len(value)}
-            if profile_store.sensitive_env_key(key)
-            else value
-        )
-        for key, value in data["env_vars"].items()
-    }
+    data = _profile_detail(sp)
     if json_out:
         emit_json(data)
         return
@@ -321,6 +326,7 @@ def new_profile(
     model_file: str = typer.Option("", "--model-file", help="llama.cpp: GGUF filename."),
     hf_repo: str = typer.Option("", "--hf-repo", help="llama.cpp: Hugging Face repo for download."),
     hf_file: str = typer.Option("", "--hf-file", help="llama.cpp: HF file for download."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved profile."),
 ) -> None:
     """Create a new profile entry in profiles.yaml."""
     if backend not in BACKENDS:
@@ -403,6 +409,9 @@ def new_profile(
         hf_file=hf_file,
     )
     profile_store.create_profile(sp)
+    if json_out:
+        _emit_profile_mutation(sp)
+        return
     print(f"Created profile '{name}' (backend={backend})")
 
 
@@ -418,6 +427,7 @@ def from_library(
     server_binary: str = typer.Option("", "--server-binary", help="Host llama-server executable."),
     port: int = typer.Option(0, "--port", "-p", help="Host port (0 = default)."),
     gpu_id: str = typer.Option("0", "--gpu-id", "-g", help="GPU id(s), comma-separated."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved profile."),
 ) -> None:
     """Create a host profile from explicitly selected catalog assets."""
     from tui.backends.llamacpp import library
@@ -452,7 +462,7 @@ def from_library(
     if mtp_n and draft_type != "draft-mtp":
         raise typer.BadParameter("--mtp-n requires --draft-type draft-mtp", param_hint="--mtp-n")
     defaults = profile_store.effective_defaults("llamacpp")
-    profile_store.create_profile(profile_store.StoredProfile(
+    created = profile_store.StoredProfile(
         name=name, backend="llamacpp", runtime="host", container_name=name,
         port=port or int(defaults["port"]), gpu_id=gpu_id,
         config_name=name, server_binary=server_binary or str(defaults["server_binary"]),
@@ -460,7 +470,11 @@ def from_library(
         draft_type=draft_type or ("draft-mtp" if draft else ""),
         mtp_n=mtp_n,
         chat_template_path=template,
-    ))
+    )
+    profile_store.create_profile(created)
+    if json_out:
+        _emit_profile_mutation(created)
+        return
     print(f"Created host library profile '{name}'")
 
 
@@ -511,6 +525,7 @@ def edit_profile(
         None, "--image-tag",
         help="Docker image override (e.g. 'llamacpp-dev:mtp_main'). Pass empty string to clear.",
     ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved profile."),
 ) -> None:
     """Edit fields of an existing profile (only specified options change)."""
     bk = detect_backend(name, override=backend)
@@ -617,7 +632,10 @@ def edit_profile(
         for key in unset_env:
             sp.env_vars.pop(key, None)
 
-    profile_store.update_profile(name, bk, apply_updates)
+    saved = profile_store.update_profile(name, bk, apply_updates)
+    if json_out:
+        _emit_profile_mutation(saved)
+        return
     print(f"Updated profile '{name}' (backend={bk})")
 
 
@@ -653,6 +671,7 @@ def rename_profile(
     old: str = typer.Argument(..., help="Existing profile name."),
     new: str = typer.Argument(..., help="New profile name."),
     backend: Optional[str] = typer.Option(None, "--backend", "-b"),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved profile."),
 ) -> None:
     """Rename a profile. Requires its container to be stopped."""
     bk = detect_backend(old, override=backend)
@@ -665,6 +684,9 @@ def rename_profile(
         renamed = profile_store.rename_profile(old, new, bk)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="NEW") from exc
+    if json_out:
+        _emit_profile_mutation(renamed)
+        return
     print(f"Renamed profile '{old}' → '{new}' (backend={bk})")
     print(f"  container: {renamed.container_name or renamed.name}")
     print(f"  config:    {renamed.config_name or renamed.name}")
@@ -675,6 +697,7 @@ def clone_profile(
     src: str = typer.Argument(..., help="Profile to copy from."),
     dst: str = typer.Argument(..., help="New profile name."),
     backend: Optional[str] = typer.Option(None, "--backend", "-b"),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved profile."),
 ) -> None:
     """Clone SRC to a new profile DST (same backend, same linked config)."""
     bk = detect_backend(src, override=backend)
@@ -692,6 +715,9 @@ def clone_profile(
         sp = profile_store.clone_profile(src, dst, bk)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="DST") from exc
+    if json_out:
+        _emit_profile_mutation(sp)
+        return
     print(f"Cloned profile '{src}' → '{dst}' (backend={bk})")
     print(f"  container: {sp.container_name or sp.name}")
     print(f"  config:    {sp.config_name or sp.name}")
@@ -707,6 +733,7 @@ def delete_profile(
         False, "--with-config", help="Also delete the linked config YAML."
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the deleted profile record."),
 ) -> None:
     """Delete a profile (and optionally its linked config)."""
     bk = detect_backend(name, override=backend)
@@ -733,6 +760,9 @@ def delete_profile(
             _d(name, delete_config_too=True)
     else:
         profile_store.delete_profile(name, bk)
+    if json_out:
+        _emit_profile_mutation(sp)
+        return
     print(f"Deleted profile '{name}' (backend={bk})")
 
 

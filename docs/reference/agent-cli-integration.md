@@ -144,6 +144,11 @@ llmux config new NAME --backend vllm --model ORGANIZATION/MODEL
 llmux config edit NAME --set KEY=VALUE
 ```
 
+Profile and config mutations accept `--json`. On success they return
+`{ "status": "ok", "result": { "profile" | "config": ... } }` with the
+authoritative saved record (including redacted profile environment values).
+Existing `list` and `show` JSON shapes remain unchanged.
+
 For local llama.cpp assets, first inspect the read-only catalog, then explicitly
 select the primary model and any companions:
 

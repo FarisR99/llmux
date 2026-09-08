@@ -24,6 +24,15 @@ from tui.common.dev_build import image_reference_credential_error
 app = typer.Typer(help="Config (YAML) CRUD.", no_args_is_help=True)
 
 
+def _config_detail(backend: str, name: str) -> dict:
+    return {"backend": backend, "name": name, "params": _load_yaml(backend, name),
+            "disabled": _backend_load_disabled(backend, name)}
+
+
+def _emit_config_mutation(backend: str, name: str) -> None:
+    emit_json({"status": "ok", "result": {"config": _config_detail(backend, name)}})
+
+
 def _config_dir(backend: str) -> Path:
     if backend == "vllm":
         from tui.backends.vllm.backend_common import CONFIG_DIR
@@ -331,6 +340,7 @@ def new_config(
         [], "--set", help="Repeatable: KEY=VALUE entries. YAML-typed values."
     ),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite if file exists."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved config."),
 ) -> None:
     """Create a new config YAML."""
     _validate_new_name(name)
@@ -362,6 +372,9 @@ def new_config(
         if path.exists() and not overwrite:
             raise typer.BadParameter(f"config already exists: {path} (use --overwrite)")
         saved = _backend_save_config(backend, name, data)
+    if json_out:
+        _emit_config_mutation(backend, name)
+        return
     print(saved)
 
 
@@ -379,6 +392,7 @@ def edit_config(
     ),
     model: Optional[str] = typer.Option(None, "--model", "-m"),
     gpu_memory_utilization: Optional[str] = typer.Option(None, "--gpu-mem"),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved config."),
 ) -> None:
     """Patch fields in an existing config."""
     parsed_set = _parse_set_kv(set_kv)
@@ -430,6 +444,9 @@ def edit_config(
             data.pop(k, None)
             disabled.pop(k, None)
         saved = _backend_save_config(bk, name, data, disabled)
+    if json_out:
+        _emit_config_mutation(bk, name)
+        return
     print(saved)
 
 
@@ -444,6 +461,7 @@ def clone_config(
     overwrite: bool = typer.Option(
         False, "--overwrite", help="Overwrite DST if it already exists."
     ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved config."),
 ) -> None:
     """Clone SRC config to DST (same backend). Useful when quick-setup
     `--copy-from` isn't enough — e.g. cloning a tuned config to a new name
@@ -462,6 +480,9 @@ def clone_config(
         data = _backend_load_config(bk, src)
         disabled = _backend_load_disabled(bk, src)
         saved = _backend_save_config(bk, dst, data, disabled)
+    if json_out:
+        _emit_config_mutation(bk, dst)
+        return
     print(saved)
 
 
@@ -474,6 +495,7 @@ def rename_config(
         help="Backend of the config; required if OLD exists in both backends.",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the authoritative saved config."),
 ) -> None:
     """Rename a config YAML and repoint every profile that referenced it."""
     from tui.common import config_store
@@ -510,6 +532,9 @@ def rename_config(
     except (OSError, RuntimeError) as exc:
         typer.echo(f"config rename failed — {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    if json_out:
+        _emit_config_mutation(bk, new)
+        return
     print(f"Renamed {_config_path(bk, old)} → {_config_path(bk, new)}")
     for name in updated:
         print(f"Repointed profile: {name}")
@@ -791,6 +816,7 @@ def delete_config(
     name: str = typer.Argument(...),
     backend: Optional[str] = typer.Option(None, "--backend", "-b"),
     yes: bool = typer.Option(False, "--yes", "-y"),
+    json_out: bool = typer.Option(False, "--json", help="Emit the deleted config record."),
 ) -> None:
     """Delete a config YAML."""
     from tui.common import config_store
@@ -811,6 +837,7 @@ def delete_config(
             )
         if not typer.confirm(prompt):
             raise typer.Exit(code=0)
+    deleted = _config_detail(bk, name) if json_out else None
     try:
         changed = config_store.delete_config(bk, name)
     except ValueError as exc:
@@ -818,6 +845,9 @@ def delete_config(
     except (OSError, RuntimeError) as exc:
         typer.echo(f"config delete failed — {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    if json_out:
+        emit_json({"status": "ok", "result": {"config": deleted}})
+        return
     print(f"Deleted {path}")
     for profile_name in changed:
         print(f"Cleared config_name on profile: {profile_name}")
