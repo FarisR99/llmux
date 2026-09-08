@@ -14,7 +14,7 @@ sys.path.insert(0, str(_CHECKOUT_ROOT))
 from tui.common import profile_store  # noqa: E402
 from tui.common.config_markers import load_yaml_mapping  # noqa: E402
 
-ROOT = profile_store.PROJECT_ROOT
+ROOT = profile_store.DATA_ROOT
 CONFIG_DIR = ROOT / "config" / "llamacpp"
 RUNTIME_DIR = ROOT / ".runtime" / "llamacpp"
 

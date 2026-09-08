@@ -3,28 +3,19 @@
 from __future__ import annotations
 
 import re
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-def _resolve_project_root() -> Path:
-    env_root = os.environ.get("LLMUX_ROOT", "").strip()
-    if env_root:
-        return Path(env_root).expanduser().resolve()
-    cwd = Path.cwd()
-    if (cwd / "profiles.example.yaml").exists() and (cwd / "compose").is_dir():
-        return cwd
-    return Path(__file__).resolve().parents[3]
+from tui.common.paths import PATHS
 
-
-PROJECT_ROOT = _resolve_project_root()
-SCRIPT_DIR = PROJECT_ROOT
-RUNTIME_DIR = PROJECT_ROOT / ".runtime" / "vllm"
-CONFIG_DIR = PROJECT_ROOT / "config" / "vllm"
-COMPOSE_DIR = PROJECT_ROOT / "compose" / "vllm"
-COMMON_ENV = PROJECT_ROOT / ".env.common"
-VLLM_SRC_DIR = PROJECT_ROOT / ".vllm-src"
+PROJECT_ROOT = PATHS.data_root
+SCRIPT_DIR = PATHS.code_root
+RUNTIME_DIR = PATHS.runtime_dir / "vllm"
+CONFIG_DIR = PATHS.config_dir / "vllm"
+COMPOSE_DIR = PATHS.code_root / "compose" / "vllm"
+COMMON_ENV = PATHS.common_env
+VLLM_SRC_DIR = PATHS.data_root / ".vllm-src"
 DEFAULT_VLLM_REPO_URL = "https://github.com/vllm-project/vllm.git"
 
 

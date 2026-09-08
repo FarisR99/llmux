@@ -13,11 +13,14 @@ from dataclasses import dataclass
 
 from tui.common.ssl_ctx import open_url
 
-from tui.common.profile_store import PROJECT_ROOT
+from tui.common.paths import PATHS
+
+PROJECT_ROOT = PATHS.code_root
+_RUNTIME_DIR = PATHS.runtime_dir
 
 log = logging.getLogger(__name__)
 
-_CACHE_FILE = PROJECT_ROOT / ".runtime" / "version-check.json"
+_CACHE_FILE = _RUNTIME_DIR / "version-check.json"
 _FAILURE_COOLDOWN = 15 * 60  # seconds — only a failed lookup backs off
 _HTTP_TIMEOUT = 3  # seconds per GitHub API call
 _USER_AGENT = "llmux-version-check"

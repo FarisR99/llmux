@@ -92,9 +92,9 @@ def llmux_version() -> str:
     try:
         return version("llmux")
     except PackageNotFoundError:
-        from tui.common.profile_store import PROJECT_ROOT
+        from tui.common.profile_store import CODE_ROOT
 
-        pyproject = PROJECT_ROOT / "pyproject.toml"
+        pyproject = CODE_ROOT / "pyproject.toml"
         try:
             content = pyproject.read_text()
         except OSError as exc:
@@ -293,6 +293,7 @@ def update_cmd(
 
 
 from tui.cli import config as _config  # noqa: E402
+from tui.cli import data as _data  # noqa: E402
 from tui.cli import container as _container  # noqa: E402
 from tui.cli import image as _image  # noqa: E402
 from tui.cli import library as _library  # noqa: E402
@@ -302,6 +303,7 @@ from tui.cli import system as _system  # noqa: E402
 app.add_typer(_container.app, name="container", help="Container lifecycle commands.")
 app.add_typer(_profile.app, name="profile", help="Profile CRUD + quick-setup.")
 app.add_typer(_config.app, name="config", help="Config (YAML) CRUD.")
+app.add_typer(_data.app, name="data", help="Mutable data-root diagnostics and migration.")
 app.add_typer(_image.app, name="image", help="Docker image inventory + dev build.")
 app.add_typer(_library.app, name="library", help="Local host llama.cpp asset catalog.")
 app.add_typer(_system.app, name="system", help="System info & env validation.")

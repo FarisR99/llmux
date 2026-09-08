@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import math
+import stat
 from pathlib import Path
 from typing import Annotated
 
@@ -194,9 +195,9 @@ def disk(
     if backend == "vllm":
         from tui.common.docker import get_disk_usage
         from tui.common.env import host_expand, parse_env_file
-        from tui.common.profile_store import PROJECT_ROOT
+        from tui.common.paths import PATHS
 
-        common = PROJECT_ROOT / ".env.common"
+        common = PATHS.common_env
         try:
             env = parse_env_file(common) if common.exists() else {}
             raw_cache = env.get("HF_CACHE_PATH", "").strip()
@@ -215,7 +216,7 @@ def disk(
             raise typer.Exit(code=1) from exc
         result = {
             "backend": backend,
-            "project_root": str(PROJECT_ROOT),
+            "data_root": str(PATHS.data_root),
             "hf_cache_path": cache,
             "hf_cache_exists": cache_exists,
             "df_target": str(target),
@@ -226,7 +227,7 @@ def disk(
         if json_out:
             emit_json(result)
             return
-        print(f"Project root : {PROJECT_ROOT}")
+        print(f"Data root    : {PATHS.data_root}")
         print(f"HF cache     : {cache}")
         print(f"df {target}: used {used}, avail {avail}  ({pct})")
         return
@@ -311,10 +312,10 @@ def env_check(
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Validate `.env.common` and report key paths."""
-    from tui.common.profile_store import PROJECT_ROOT
+    from tui.common.paths import PATHS
     from tui.common.env import parse_env_file, validate_common_env
 
-    common = PROJECT_ROOT / ".env.common"
+    common = PATHS.common_env
     from tui.common.system_operations import environment_status
     from tui.common import profile_store
     host_profiles = [p for p in profile_store.list_profiles("llamacpp") if p.runtime == "host"]
@@ -324,11 +325,22 @@ def env_check(
         ok, messages = validate_common_env(common)
     warnings = [message for message in messages if message.startswith("Warning:")]
     findings = {
-        "project_root": str(PROJECT_ROOT),
+        "code_root": str(PATHS.code_root),
+        "data_root": str(PATHS.data_root),
+        "project_root": str(PATHS.data_root),  # compatibility: mutable project state
+        "data_source": PATHS.data_source,
         "env_common_path": str(common),
         "env_common_exists": common.exists(),
         "issues": [] if ok else [message for message in messages if message not in warnings],
         "warnings": warnings,
+        "legacy_state_detected": PATHS.code_root != PATHS.data_root and any(
+            (PATHS.code_root / name).exists() for name in ("profiles.yaml", ".env.common", "config")
+        ),
+        "migration_ready": PATHS.code_root != PATHS.data_root and not PATHS.data_root.exists(),
+        "unsafe_permissions": {
+            "data_root": PATHS.data_root.exists() and bool(stat.S_IMODE(PATHS.data_root.stat().st_mode) & 0o077),
+            "env_common": common.exists() and bool(stat.S_IMODE(common.stat().st_mode) & 0o077),
+        },
     }
     env = parse_env_file(common) if common.exists() else {}
     token = env.get("HF_TOKEN", "")
@@ -341,8 +353,11 @@ def env_check(
         emit_json(findings)
         raise typer.Exit(code=0 if ok else 1)
 
-    print(f"Project root : {findings['project_root']}")
+    print(f"Code root    : {findings['code_root']}")
+    print(f"Data root    : {findings['data_root']} ({findings['data_source']})")
     print(f"Env common   : {findings['env_common_path']}")
+    if findings["legacy_state_detected"]:
+        print("Migration    : legacy checkout state detected; run `llmux data migrate --json` to plan")
     if not findings["env_common_exists"] and not ok:
         print("Status       : MISSING .env.common")
         raise typer.Exit(code=1)

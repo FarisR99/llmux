@@ -7,10 +7,10 @@ import tempfile
 from pathlib import Path
 
 from tui.common.env import validate_common_env
-from tui.common.profile_store import PROJECT_ROOT
+from tui.common.profile_store import CODE_ROOT, PROJECT_ROOT
 
 COMMON_ENV = PROJECT_ROOT / ".env.common"
-COMMON_ENV_EXAMPLE = PROJECT_ROOT / ".env.common.example"
+COMMON_ENV_EXAMPLE = CODE_ROOT / ".env.common.example"
 
 
 def needs_onboarding() -> bool:

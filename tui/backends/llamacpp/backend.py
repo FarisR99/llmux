@@ -32,22 +32,15 @@ from tui.common.ssl_ctx import open_url, redact_sensitive_text, same_origin
 log = logging.getLogger(__name__)
 
 
-def _resolve_project_root() -> Path:
-    env_root = os.environ.get("LLMUX_ROOT", "").strip()
-    if env_root:
-        return Path(env_root).expanduser().resolve()
-    cwd = Path.cwd()
-    if (cwd / "profiles.example.yaml").exists() and (cwd / "compose").is_dir():
-        return cwd
-    return Path(__file__).resolve().parents[3]
+from tui.common.paths import PATHS
 
-
-PROJECT_ROOT = _resolve_project_root()
-ROOT = PROJECT_ROOT
-RUNTIME_DIR = PROJECT_ROOT / ".runtime" / "llamacpp"
-CONFIG_DIR = PROJECT_ROOT / "config" / "llamacpp"
-SCRIPTS_DIR = PROJECT_ROOT / "scripts" / "llamacpp"
-COMMON_ENV = PROJECT_ROOT / ".env.common"
+PROJECT_ROOT = PATHS.data_root
+CODE_ROOT = PATHS.code_root
+ROOT = PATHS.data_root
+RUNTIME_DIR = PATHS.runtime_dir / "llamacpp"
+CONFIG_DIR = PATHS.config_dir / "llamacpp"
+SCRIPTS_DIR = PATHS.code_root / "scripts" / "llamacpp"
+COMMON_ENV = PATHS.common_env
 LLAMACPP_OFFICIAL_REPO = "ghcr.io/ggml-org/llama.cpp"
 LLAMACPP_OFFICIAL_IMAGE = f"{LLAMACPP_OFFICIAL_REPO}:server-cuda"
 

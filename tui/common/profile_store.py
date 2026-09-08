@@ -15,25 +15,14 @@ import yaml
 
 from tui.common.config_markers import load_yaml_mapping
 
-def _resolve_project_root() -> Path:
-    env_root = os.environ.get("LLMUX_ROOT", "").strip()
-    if env_root:
-        root = Path(env_root).expanduser().resolve()
-        if not (root / "compose").is_dir():
-            raise RuntimeError(
-                f"LLMUX_ROOT={env_root} does not look like an llmux checkout "
-                f"({root / 'compose'} is missing)."
-            )
-        return root
-    cwd = Path.cwd()
-    if (cwd / "profiles.example.yaml").exists() and (cwd / "compose").is_dir():
-        return cwd
-    return Path(__file__).resolve().parents[2]
+from tui.common.paths import PATHS
 
-
-PROJECT_ROOT = _resolve_project_root()
-PROFILES_YAML = PROJECT_ROOT / "profiles.yaml"
-RUNTIME_DIR = PROJECT_ROOT / ".runtime"
+# PROJECT_ROOT remains a compatibility alias for mutable project state.
+PROJECT_ROOT = PATHS.data_root
+CODE_ROOT = PATHS.code_root
+DATA_ROOT = PATHS.data_root
+PROFILES_YAML = PATHS.profiles_yaml
+RUNTIME_DIR = PATHS.runtime_dir
 
 Backend = Literal["vllm", "llamacpp"]
 

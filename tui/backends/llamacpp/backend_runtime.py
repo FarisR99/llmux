@@ -25,6 +25,7 @@ from .backend import (
     COMMON_ENV,
     LLAMACPP_OFFICIAL_IMAGE,
     CONFIG_DIR,
+    CODE_ROOT,
     PROJECT_ROOT,
     RUNTIME_DIR,
     SCRIPTS_DIR,
@@ -37,7 +38,7 @@ from .backend import (
     save_config,
 )
 
-COMPOSE_DIR = PROJECT_ROOT / "compose" / "llamacpp"
+COMPOSE_DIR = CODE_ROOT / "compose" / "llamacpp"
 BASE_COMPOSE = COMPOSE_DIR / "docker-compose.yaml"
 DEV_COMPOSE = COMPOSE_DIR / "docker-compose.dev.yaml"
 
@@ -167,7 +168,7 @@ async def _run(*args: str, env: dict[str, str] | None = None, timeout: float = 6
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=str(PROJECT_ROOT),
+            cwd=str(CODE_ROOT),
             env=env,
         )
     except FileNotFoundError:
@@ -188,7 +189,7 @@ async def _stream(args: list[str], *, env: dict[str, str] | None = None):
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=str(PROJECT_ROOT),
+            cwd=str(CODE_ROOT),
             env=env,
         )
     except FileNotFoundError:
