@@ -237,5 +237,11 @@ input fits. Prompt text and messages are never copied into output or errors.
 
 vLLM token counting uses locally cached Hugging Face tokenizer assets and its
 chat template when available. Exact offline GGUF counting requires a compatible
-local `llama-tokenize` program supplied with `--tokenizer-binary`; offline GGUF
-chat-message counting returns a capability error rather than an estimate.
+local `llama-tokenize` program supplied with `--tokenizer-binary`. The preferred
+llama.cpp contract is `llama-tokenize --model MODEL --stdin --show-count`;
+llmux writes the input only to stdin and accepts one labelled integer count amid
+informational output. Stdin-capable custom tokenizers returning
+`{"tokens": N}` from `--stdin --json` are also supported. Any unavailable,
+unsupported, failed, or malformed tokenizer result is an explicit error, never
+an estimate. Offline GGUF chat-message counting returns a capability error
+rather than an estimate.

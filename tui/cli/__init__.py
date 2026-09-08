@@ -352,7 +352,7 @@ def tokens_cmd(
     messages: bool = typer.Option(False, "--messages", help="Interpret input as a JSON message array."),
     reserve: int = typer.Option(0, "--reserve", min=0, help="Reserved output-token capacity."),
     backend: str | None = typer.Option(None, "--backend", "-b"),
-    tokenizer_binary: str = typer.Option("", "--tokenizer-binary", help="Local llama-tokenize binary for GGUF profiles."),
+    tokenizer_binary: str = typer.Option("", "--tokenizer-binary", help="Local llama-tokenize supporting --stdin --show-count for GGUF profiles."),
     json_out: bool = typer.Option(False, "--json", help="Emit a structured token-count result."),
 ) -> None:
     """Count tokens without starting a server; never logs prompt contents."""
