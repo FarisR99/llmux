@@ -26,6 +26,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["tui"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"compose" = "tui/_assets/compose"
+"scripts" = "tui/_assets/scripts"
+".env.common.example" = "tui/_assets/.env.common.example"
+"profiles.example.yaml" = "tui/_assets/profiles.example.yaml"
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",

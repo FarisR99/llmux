@@ -60,7 +60,11 @@ def resolve_paths() -> LlmuxPaths:
         if _is_code_root(cwd):
             code_root = cwd
         else:
-            code_root = Path(__file__).resolve().parents[2]
+            package_root = Path(__file__).resolve().parents[1]
+            code_root = package_root / "_assets"
+            if not _is_code_root(code_root):
+                # Editable/source installs retain assets beside the package.
+                code_root = package_root.parent
             if not _is_code_root(code_root):
                 raise PathResolutionError(f"llmux package assets are unavailable at {code_root}")
 
