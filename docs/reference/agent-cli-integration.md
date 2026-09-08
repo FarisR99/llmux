@@ -132,6 +132,13 @@ before edits that affect a running profile, and before profile renames or
 deletes. Config rename/delete likewise requires any referencing profile to be
 stopped.
 
+When `up`, `prepare`, or `down` is called with `--json` while that profile is
+busy, it exits with code `75` and writes an error envelope whose code is
+`OPERATION_IN_PROGRESS`. The error includes the requested action, current
+operation/state when safely known, `retry_after_seconds` (or `null` when it
+cannot be determined), and retry guidance. llmux never retries lifecycle
+actions automatically.
+
 ## Creating profiles and configs
 
 Creation is distinct from discovery and is always mutating. Use the CLI rather

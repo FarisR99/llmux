@@ -19,6 +19,7 @@ from tui.cli._runtime import (
     stream_async,
 )
 from tui.common import profile_store
+from tui.common.lifecycle import BUSY_EXIT_CODE, OperationInProgress, operation_lock
 from tui.common.dev_build import repo_url_error
 from tui.common.http import (
     BENCH_MAX_TOKENS,
@@ -88,6 +89,7 @@ def up(
         help="Allow a detected GPU overlap. Port conflicts and failed port probes "
              "always abort.",
     ),
+    json_out: bool = typer.Option(False, "--json", help="Emit structured contention errors."),
 ) -> None:
     """Start a profile's container. Streams compose output to stdout."""
     if dev and default_image:
@@ -152,34 +154,22 @@ def up(
         for warning in gpu_conflicts:
             typer.echo(f"  • {warning}", err=True)
 
-    if bk == "vllm":
-        from tui.backends.vllm.backend_runtime import stream_container_up
-
-        rc = stream_async(
-            stream_container_up(
-                profile,
-                use_dev=dev,
-                use_default_image=default_image,
-                tag=tag,
-                pull=pull,
-                repo_url=repo_url,
-                branch=branch,
-            )
-        )
-    else:
-        from tui.backends.llamacpp.backend_runtime import stream_container_up as lc_up
-
-        rc = stream_async(
-            lc_up(
-                profile,
-                use_dev=dev,
-                use_default_image=default_image,
-                tag=tag,
-                pull=pull,
-                repo_url=repo_url,
-                branch=branch,
-            )
-        )
+    try:
+        with operation_lock(bk, profile, "up"):
+            if bk == "vllm":
+                from tui.backends.vllm.backend_runtime import stream_container_up
+                rc = stream_async(stream_container_up(profile, use_dev=dev, use_default_image=default_image,
+                                  tag=tag, pull=pull, repo_url=repo_url, branch=branch))
+            else:
+                from tui.backends.llamacpp.backend_runtime import stream_container_up as lc_up
+                rc = stream_async(lc_up(profile, use_dev=dev, use_default_image=default_image,
+                              tag=tag, pull=pull, repo_url=repo_url, branch=branch))
+    except OperationInProgress as exc:
+        if json_out:
+            emit_json({"status": "error", "error": exc.payload()})
+        else:
+            typer.echo(f"Busy: {exc}. Wait for it to finish, then retry.", err=True)
+        raise typer.Exit(code=BUSY_EXIT_CODE)
     raise typer.Exit(code=rc)
 
 
@@ -195,17 +185,24 @@ def prepare(
         help="Parallel download connections (HF caps each at a few MB/s). "
              "Overrides PREPARE_MAX_WORKERS from .env.common.",
     ),
+    json_out: bool = typer.Option(False, "--json", help="Emit structured contention errors."),
 ) -> None:
     """Render runtime files and download weights without starting the server."""
     bk = detect_backend(profile, override=backend)
-    if bk == "vllm":
-        from tui.backends.vllm.backend_runtime import stream_container_prepare
-
-        rc = stream_async(stream_container_prepare(profile, max_workers=max_workers))
-    else:
-        from tui.backends.llamacpp.backend_runtime import stream_container_prepare
-
-        rc = stream_async(stream_container_prepare(profile, max_workers=max_workers))
+    try:
+        with operation_lock(bk, profile, "prepare"):
+            if bk == "vllm":
+                from tui.backends.vllm.backend_runtime import stream_container_prepare
+                rc = stream_async(stream_container_prepare(profile, max_workers=max_workers))
+            else:
+                from tui.backends.llamacpp.backend_runtime import stream_container_prepare
+                rc = stream_async(stream_container_prepare(profile, max_workers=max_workers))
+    except OperationInProgress as exc:
+        if json_out:
+            emit_json({"status": "error", "error": exc.payload()})
+        else:
+            typer.echo(f"Busy: {exc}. Wait for it to finish, then retry.", err=True)
+        raise typer.Exit(code=BUSY_EXIT_CODE)
     raise typer.Exit(code=rc)
 
 
@@ -215,17 +212,27 @@ def down(
     backend: Optional[str] = typer.Option(
         None, "--backend", "-b", help="Force backend; auto-detect if omitted."
     ),
+    json_out: bool = typer.Option(False, "--json", help="Emit a structured lifecycle result."),
 ) -> None:
     """Stop a profile's container."""
     bk = detect_backend(profile, override=backend)
-    if bk == "vllm":
-        from tui.backends.vllm.backend_runtime import container_down
-
-        rc, msg = run_async(container_down(profile))
-    else:
-        from tui.backends.llamacpp.backend_runtime import container_down as lc_down
-
-        rc, msg = run_async(lc_down(profile))
+    try:
+        with operation_lock(bk, profile, "down"):
+            if bk == "vllm":
+                from tui.backends.vllm.backend_runtime import container_down
+                rc, msg = run_async(container_down(profile))
+            else:
+                from tui.backends.llamacpp.backend_runtime import container_down as lc_down
+                rc, msg = run_async(lc_down(profile))
+    except OperationInProgress as exc:
+        if json_out:
+            emit_json({"status": "error", "error": exc.payload()})
+        else:
+            typer.echo(f"Busy: {exc}. Wait for it to finish, then retry.", err=True)
+        raise typer.Exit(code=BUSY_EXIT_CODE)
+    if json_out:
+        emit_json({"status": "ok" if rc == 0 else "error", "result": {"profile": profile, "backend": bk, "action": "down", "message": msg}})
+        raise typer.Exit(code=rc)
     if msg:
         print(msg.rstrip())
     raise typer.Exit(code=rc)
