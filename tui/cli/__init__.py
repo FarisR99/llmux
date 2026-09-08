@@ -7,6 +7,7 @@ Subcommands provide non-interactive access for scripts and agents.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import typer
 
@@ -339,6 +340,69 @@ app.command(
     "stats",
     help="Live tok/s from running servers' /metrics (alias for `container stats`).",
 )(_container.stats)
+
+
+@app.command("tokens")
+def tokens_cmd(
+    profile: str = typer.Argument(..., help="Profile whose local tokenizer is used."),
+    stdin: bool = typer.Option(False, "--stdin", help="Read UTF-8 text or messages from stdin."),
+    file: str = typer.Option("", "--file", help="Read UTF-8 text or messages from this file."),
+    messages: bool = typer.Option(False, "--messages", help="Interpret input as a JSON message array."),
+    reserve: int = typer.Option(0, "--reserve", min=0, help="Reserved output-token capacity."),
+    backend: str | None = typer.Option(None, "--backend", "-b"),
+    tokenizer_binary: str = typer.Option("", "--tokenizer-binary", help="Local llama-tokenize binary for GGUF profiles."),
+    json_out: bool = typer.Option(False, "--json", help="Emit a structured token-count result."),
+) -> None:
+    """Count tokens without starting a server; never logs prompt contents."""
+    import sys
+    from tui.cli._runtime import detect_backend, emit_json
+    from tui.common import profile_store
+    from tui.common.tokens import TokenCapabilityError, TokenInputError, context_limit, count_llamacpp, count_vllm
+    if stdin == bool(file):
+        raise typer.BadParameter("choose exactly one of --stdin or --file")
+    try:
+        text = sys.stdin.read() if stdin else Path(file).read_text(encoding="utf-8")
+        payload = json.loads(text) if messages else None
+        if messages and (not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload)):
+            raise TokenInputError("--messages input must be a JSON array of objects")
+        bk = detect_backend(profile, override=backend)
+        stored = profile_store.load_profile(profile, bk)
+        if bk == "vllm":
+            from tui.backends.vllm.backend_storage import load_config
+            config = load_config(stored.config_name or stored.name)
+            source = str(config.extra_params.get("tokenizer") or config.model or stored.model_id)
+            count, mode, inferred_limit = count_vllm(source, text, messages=payload)
+            limit = context_limit(bk, {"max-model-len": config.extra_params.get("max-model-len")}) or inferred_limit
+        else:
+            if messages:
+                raise TokenCapabilityError("offline GGUF chat-message tokenization is unavailable without a template-capable tokenizer")
+            from tui.backends.llamacpp.backend import load_config
+            config = load_config(stored.config_name or stored.name)
+            source = tokenizer_binary or ""
+            model = stored.model_path or stored.hf_file or stored.model_file
+            count, mode = count_llamacpp(source, model, text)
+            limit = context_limit(bk, config.params)
+        remaining = max(limit - count - reserve, 0) if limit is not None else None
+        result = {"profile": profile, "backend": bk, "tokenizer_mode": mode,
+                  "tokenizer_source": source, "input_tokens": count, "context_limit": limit,
+                  "reserved_tokens": reserve, "remaining_capacity": remaining,
+                  "fits_context": None if limit is None else count + reserve <= limit}
+        if json_out:
+            emit_json({"status": "ok", "result": result})
+        else:
+            print(f"{profile}: {count} input tokens")
+    except TokenInputError as exc:
+        if json_out:
+            emit_json({"status": "error", "error": {"code": "INPUT_INVALID", "message": str(exc)}})
+        else:
+            typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except TokenCapabilityError as exc:
+        if json_out:
+            emit_json({"status": "error", "error": {"code": exc.code, "message": str(exc)}})
+        else:
+            typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
 
 
 def main() -> None:

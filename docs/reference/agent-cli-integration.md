@@ -192,3 +192,23 @@ environment values in an integration. Treat profile names, model identifiers,
 and ports as data returned by the CLI. Keep secrets in the launching user's
 environment or that user's protected llmux configuration, and avoid logging
 them when forwarding command output.
+
+## Token counting
+
+Use `tokens` to count input without placing prompt content on the command line:
+
+```bash
+llmux tokens NAME --stdin --json
+llmux tokens NAME --file request.json --messages --reserve 512 --json
+```
+
+Choose exactly one of `--stdin` and `--file`. Raw UTF-8 is the default;
+`--messages` accepts a JSON array of chat-message objects. Successful JSON
+results include the profile, backend, tokenizer mode/source, input token count,
+known context limit, reserved capacity, remaining capacity, and whether the
+input fits. Prompt text and messages are never copied into output or errors.
+
+vLLM token counting uses locally cached Hugging Face tokenizer assets and its
+chat template when available. Exact offline GGUF counting requires a compatible
+local `llama-tokenize` program supplied with `--tokenizer-binary`; offline GGUF
+chat-message counting returns a capability error rather than an estimate.
