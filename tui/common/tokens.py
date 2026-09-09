@@ -68,9 +68,20 @@ def _safe_stderr_summary(stderr: str, text: str) -> str:
 
 
 def _run_tokenizer(argv: list[str], text: str) -> subprocess.CompletedProcess[str]:
-    """Run a tokenizer with input exclusively on stdin."""
-    return subprocess.run(
-        argv, input=text, capture_output=True, text=True, timeout=30, check=False
+    """Run a tokenizer with UTF-8 stdin and loss-tolerant diagnostic decoding."""
+    result = subprocess.run(
+        argv, input=text.encode("utf-8"), capture_output=True, timeout=30, check=False
+    )
+
+    def decode(value: bytes | str | None) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value or ""
+
+    # llama.cpp diagnostics may contain model bytes that are not valid UTF-8.
+    # Decode only after process completion so they cannot bypass exact parsing.
+    return subprocess.CompletedProcess(
+        result.args, result.returncode, decode(result.stdout), decode(result.stderr)
     )
 
 

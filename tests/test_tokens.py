@@ -34,7 +34,7 @@ def test_llamacpp_show_count_uses_stdin_and_parses_informational_output(tokenize
     argv = run.call_args.args[0]
     assert argv == [tokenizer, "--model", "model.gguf", "--stdin", "--show-count"]
     assert prompt not in argv
-    assert run.call_args.kwargs["input"] == prompt
+    assert run.call_args.kwargs["input"] == prompt.encode("utf-8")
 
 
 def test_llamacpp_legacy_json_fallback_is_stdin_only(tokenizer: str) -> None:
@@ -45,7 +45,7 @@ def test_llamacpp_legacy_json_fallback_is_stdin_only(tokenizer: str) -> None:
         assert count_llamacpp(tokenizer, "model.gguf", prompt) == (17, "llamacpp_json")
     assert run.call_args_list[1].args[0] == [tokenizer, "--model", "model.gguf", "--stdin", "--json"]
     assert all(prompt not in call.args[0] for call in run.call_args_list)
-    assert all(call.kwargs["input"] == prompt for call in run.call_args_list)
+    assert all(call.kwargs["input"] == prompt.encode("utf-8") for call in run.call_args_list)
 
 
 @pytest.mark.parametrize("output", ["token count: 4\ntokens: 5\n", "token count: nope\n", ""])
@@ -70,3 +70,16 @@ def test_llamacpp_never_estimates_after_bad_standard_output(tokenizer: str) -> N
         with pytest.raises(TokenizerOutputError):
             count_llamacpp(tokenizer, "model.gguf", "input")
     assert run.call_count == 1
+
+
+def test_llamacpp_decodes_invalid_utf8_before_parsing_exact_count(tokenizer: str) -> None:
+    result = _result([], 0, b"model diagnostic: \xff\xfe\ntoken count: 42\n")
+    with patch("tui.common.tokens.subprocess.run", return_value=result):
+        assert count_llamacpp(tokenizer, "model.gguf", "input") == (42, "llamacpp_show_count")
+
+
+def test_llamacpp_decodes_invalid_utf8_in_failure_diagnostic(tokenizer: str) -> None:
+    failure = _result([], 1, b"", b"CUDA runtime \xff incompatible")
+    with patch("tui.common.tokens.subprocess.run", return_value=failure):
+        with pytest.raises(TokenizerProcessError, match="CUDA runtime"):
+            count_llamacpp(tokenizer, "model.gguf", "input")
