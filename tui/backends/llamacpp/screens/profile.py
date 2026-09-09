@@ -118,6 +118,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
         self.query_one("#draft-type-row").display = host
         self.query_one("#mtp-n-row").display = host
         self.query_one("#template-path-row").display = host
+        self.query_one("#model-volume-row").display = not host
         self.query_one("#image-tag-input", Input).parent.display = not host
         self.query_one("#container-input", Input).parent.display = not host
 
@@ -164,6 +165,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Label(t("Bind address", "바인드 주소"))
                     yield Input(value=p.host_bind if p else "127.0.0.1", id="host-bind-input")
                 yield Static(t("Host mode defaults to loopback. A non-loopback address exposes the API to reachable networks; configure firewall and forwarding outside llmux.", "호스트 모드는 기본적으로 루프백입니다. 루프백 이외 주소는 도달 가능한 네트워크에 API를 노출합니다. 방화벽과 포워딩은 llmux 외부에서 설정하세요."), classes="form-note", id="host-bind-note")
+                with Horizontal(classes="form-row", id="model-volume-row"):
+                    yield Label(t("Docker model directory", "Docker 모델 디렉터리"))
+                    yield Input(value=p.model_volume if p else "", placeholder="/srv/models (mounted read-only at /models)", id="model-volume-input")
                 with Horizontal(classes="form-row", id="model-path-row"):
                     yield Label(t("Local GGUF path", "로컬 GGUF 경로"))
                     yield Input(value=p.model_path if p else "", id="model-path-input")
@@ -402,6 +406,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             mtp_n=mtp_n if self.query_one("#runtime-select", Select).value == "host" else 0,
             chat_template_path=self.query_one("#template-path-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "",
             host_bind=self.query_one("#host-bind-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "127.0.0.1",
+            model_volume=self.query_one("#model-volume-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "docker" else "",
             name=name,
             container_name=container or name,
             port=port_int,
@@ -424,7 +429,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify(str(exc), severity="error", timeout=8)
             return
         self.notify(t(f"Saved: {name}", f"저장: {name}"), severity="information")
-        if not hf_repo and not p.model_path:
+        if not hf_repo and not p.model_path and not p.model_volume:
             self.notify(
                 t(
                     "Cannot start container without HF Repo (-hf download source required)",

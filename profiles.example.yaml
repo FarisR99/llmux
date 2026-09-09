@@ -67,6 +67,9 @@ profiles:
   #     LD_LIBRARY_PATH: /opt/custom-llama/lib
   # For HF downloads, replace model_path with hf_repo and hf_file.
   # defaults.llamacpp may also set runtime and server_binary.
+  # Docker local model directory (instead of hf_repo/hf_file): mounted /models:ro.
+  #   model_volume: /srv/models
+  #   model_file: my-model.gguf
   # Optional explicit local companion assets for multimodal/speculative models:
   #   mmproj_path: /srv/llama-cpp/mmproj/model.gguf
   #   draft_model_path: /srv/llama-cpp/mtp/model.gguf

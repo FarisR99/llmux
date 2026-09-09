@@ -66,6 +66,21 @@ the upstream repository.
 
 <br/>
 
+## Docker llama.cpp local models
+
+For an existing local GGUF directory, Docker llama.cpp can mount it read-only
+instead of downloading from Hugging Face. `--model-volume` is the absolute host
+directory; `--model-file` is the relative GGUF filename and is exposed inside
+the container as `/models/<filename>`.
+
+```bash
+uv run llmux profile new local-docker --backend llamacpp \
+  --model-volume /srv/models --model-file qwen.gguf
+```
+
+The directory must be accessible to Docker. Keep split shards alongside the
+selected file. This mode cannot be combined with `--hf-repo`/`--hf-file`.
+
 ## Host llama.cpp
 
 You can select `runtime: host` per llama.cpp profile and point `server_binary` at

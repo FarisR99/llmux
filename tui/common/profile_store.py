@@ -80,7 +80,7 @@ _PROFILE_KEYS_BY_BACKEND = {
     "llamacpp": _SHARED_PROFILE_KEYS
     | {
         "model_file", "hf_repo", "hf_file", "server_binary", "model_path",
-        "mmproj_path", "draft_model_path", "draft_type", "mtp_n", "chat_template_path", "host_bind",
+        "mmproj_path", "draft_model_path", "draft_type", "mtp_n", "chat_template_path", "host_bind", "model_volume",
     },
 }
 _PROTECTED_ENV_KEYS = frozenset(
@@ -242,6 +242,8 @@ class StoredProfile:
     chat_template_path: str = ""
     # Host-runtime-only listener address. Never inherited from config defaults.
     host_bind: str = "127.0.0.1"
+    # Docker llama.cpp-only host directory mounted at /models:ro.
+    model_volume: str = ""
 
 
 def _load_yaml() -> dict:
@@ -507,6 +509,7 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
         mtp_n=_as_int("mtp_n", merged.get("mtp_n", 0)),
         chat_template_path=merged.get("chat_template_path", ""),
         host_bind=entry.get("host_bind", "127.0.0.1"),
+        model_volume=entry.get("model_volume", ""),
     )
     _validate_profile(profile)
     return profile
@@ -546,6 +549,17 @@ def _validate_profile(profile: StoredProfile) -> None:
     )
     if profile.runtime == "docker" and (any(host_assets) or profile.server_binary != "llama-server"):
         raise ValueError("host model paths and server_binary require runtime=host")
+    if profile.model_volume:
+        if profile.runtime != "docker" or profile.backend != "llamacpp":
+            raise ValueError("model_volume requires llama.cpp runtime=docker")
+        expanded = Path(os.path.expanduser(os.path.expandvars(profile.model_volume)))
+        if not expanded.is_absolute() or not expanded.is_dir():
+            raise ValueError("model_volume must be an existing absolute directory accessible to Docker")
+        model_file = Path(profile.model_file)
+        if not profile.model_file or model_file.is_absolute() or ".." in model_file.parts or any(ord(c) < 32 for c in profile.model_file):
+            raise ValueError("model_volume requires model_file relative to the mounted directory")
+        if profile.hf_repo or profile.hf_file:
+            raise ValueError("choose model_volume OR Hugging Face model metadata")
     if profile.model_path and (profile.hf_repo or profile.hf_file or profile.model_file):
         raise ValueError("choose model_path OR Hugging Face model metadata")
     if profile.draft_model_path and not profile.model_path:
@@ -619,6 +633,7 @@ def _validate_profile(profile: StoredProfile) -> None:
         "hf_repo",
         "hf_file",
         "image_tag",
+        "model_volume",
     )
     for field_name in string_fields:
         if not isinstance(getattr(profile, field_name), str):
@@ -726,6 +741,8 @@ def _profile_to_entry(
         # Intentionally profile-scoped, never a Docker/config default.
         if profile.runtime == "host" and profile.host_bind != "127.0.0.1":
             out["host_bind"] = profile.host_bind
+        if profile.model_volume:
+            out["model_volume"] = profile.model_volume
     if profile.env_vars:
         out["env_vars"] = dict(profile.env_vars)
     if profile.image_tag:
@@ -1317,6 +1334,8 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
             lines.append(_env_line("HF_REPO", profile.hf_repo))
         if profile.hf_file:
             lines.append(_env_line("HF_FILE", profile.hf_file))
+        if profile.model_volume:
+            lines.append(_env_line("MODEL_VOLUME_PATH", profile.model_volume))
         reserved = _RESERVED_ENV_KEYS_BY_BACKEND["llamacpp"]
         for k, v in profile.env_vars.items():
             if k in reserved:

@@ -289,6 +289,7 @@ def new_profile(
     host_bind: str = typer.Option("127.0.0.1", "--host-bind", help="Host runtime bind IP (default: 127.0.0.1; non-loopback exposes the API)."),
     server_binary: str = typer.Option("", "--server-binary", help="Host llama-server executable."),
     model_path: str = typer.Option("", "--model-path", help="Host local GGUF path."),
+    model_volume: str = typer.Option("", "--model-volume", help="Docker llama.cpp host directory mounted at /models:ro; use relative --model-file."),
     mmproj_path: str = typer.Option("", "--mmproj-path", help="Host multimodal projector GGUF."),
     draft_model_path: str = typer.Option("", "--draft-model-path", help="Host speculative draft GGUF."),
     draft_type: str = typer.Option("", "--draft-type", help="Host draft type, e.g. draft-mtp."),
@@ -388,6 +389,7 @@ def new_profile(
         runtime=runtime,
         server_binary=server_binary,
         model_path=model_path,
+        model_volume=model_volume,
         mmproj_path=mmproj_path,
         draft_model_path=draft_model_path,
         draft_type=draft_type,
@@ -490,6 +492,7 @@ def edit_profile(
     host_bind: Optional[str] = typer.Option(None, "--host-bind", help="Host runtime bind IP; non-loopback exposes the API."),
     server_binary: Optional[str] = typer.Option(None, "--server-binary"),
     model_path: Optional[str] = typer.Option(None, "--model-path"),
+    model_volume: Optional[str] = typer.Option(None, "--model-volume", help="Docker host directory mounted at /models:ro; requires relative --model-file."),
     mmproj_path: Optional[str] = typer.Option(None, "--mmproj-path"),
     draft_model_path: Optional[str] = typer.Option(None, "--draft-model-path"),
     draft_type: Optional[str] = typer.Option(None, "--draft-type"),
@@ -573,6 +576,8 @@ def edit_profile(
             sp.server_binary = server_binary
         if model_path is not None:
             sp.model_path = model_path
+        if model_volume is not None:
+            sp.model_volume = model_volume
         if mmproj_path is not None:
             sp.mmproj_path = mmproj_path
         if draft_model_path is not None:
@@ -808,6 +813,7 @@ def quick_setup(
     runtime: str = typer.Option("", "--runtime", help="docker or host (llama.cpp only)."),
     server_binary: str = typer.Option("", "--server-binary", help="Host llama-server executable."),
     model_path: str = typer.Option("", "--model-path", help="Host local GGUF path."),
+    model_volume: str = typer.Option("", "--model-volume", help="Docker llama.cpp host directory mounted at /models:ro; use --hf-file as its relative model filename."),
     port: int = typer.Option(
         0, "--port", "-p",
         help="Host port (0 = backend default: vLLM 8000, llama.cpp 8080).",
@@ -887,7 +893,7 @@ def quick_setup(
     defaults = profile_store.effective_defaults(backend)
     runtime = runtime or str(defaults.get("runtime", "docker"))
     server_binary = server_binary or str(defaults.get("server_binary", "llama-server"))
-    if backend == "vllm" and (runtime != "docker" or model_path or server_binary != "llama-server"):
+    if backend == "vllm" and (runtime != "docker" or model_path or model_volume or server_binary != "llama-server"):
         raise typer.BadParameter("Host runtime options are supported only for llama.cpp")
     if backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
@@ -958,7 +964,7 @@ def quick_setup(
         )
 
     _quick_setup_llamacpp(
-        runtime=runtime, server_binary=server_binary, model_path=model_path,
+        runtime=runtime, server_binary=server_binary, model_path=model_path, model_volume=model_volume,
         hf_repo=hf_repo,
         hf_file=hf_file,
         name=name,
@@ -1101,6 +1107,7 @@ def _quick_setup_llamacpp(
     runtime: str = "docker",
     server_binary: str = "llama-server",
     model_path: str = "",
+    model_volume: str = "",
 ) -> None:
     from tui.backends.llamacpp.backend import (
         CONFIG_DIR as llamacpp_config_dir,
@@ -1112,7 +1119,7 @@ def _quick_setup_llamacpp(
         validate_name as l_validate_name,
     )
 
-    if not model_path:
+    if not model_path and not model_volume:
         repo = _normalize_hf_repo(hf_repo)
         if not repo or not _LLAMACPP_REPO_RE.match(repo):
             raise typer.BadParameter(
@@ -1161,9 +1168,14 @@ def _quick_setup_llamacpp(
             )
 
     else:
-        if runtime != "host" or hf_repo or hf_file:
-            raise typer.BadParameter("--model-path requires host runtime and no HF metadata")
-        repo = Path(model_path).stem
+        if model_volume:
+            if runtime != "docker" or hf_repo or not hf_file:
+                raise typer.BadParameter("--model-volume requires Docker runtime and --hf-file, with no --hf-repo")
+            repo = Path(model_volume).name
+        else:
+            if runtime != "host" or hf_repo or hf_file:
+                raise typer.BadParameter("--model-path requires host runtime and no HF metadata")
+            repo = Path(model_path).stem
         _validate_port(port)
         _validate_gpu_id(gpu_id)
 
@@ -1248,7 +1260,7 @@ def _quick_setup_llamacpp(
         l_save_config(config)
         profile_store.create_profile(
             profile_store.StoredProfile(
-                runtime=runtime, server_binary=server_binary, model_path=model_path,
+                runtime=runtime, server_binary=server_binary, model_path=model_path, model_volume=model_volume,
                 name=final_name,
                 backend="llamacpp",
                 container_name=final_name,
@@ -1256,8 +1268,8 @@ def _quick_setup_llamacpp(
                 gpu_id=gpu_id,
                 config_name=final_name,
                 model_file=hf_file,
-                hf_repo=repo if not model_path else "",
-                hf_file=hf_file,
+                hf_repo=repo if not (model_path or model_volume) else "",
+                hf_file=hf_file if not model_volume else "",
             )
         )
     print(f"Created profile + config: {final_name}")

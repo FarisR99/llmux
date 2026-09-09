@@ -168,6 +168,8 @@ class QuickSetupScreen(ModalScreen[str]):
                 yield Input(value=str(profile_store.effective_defaults("llamacpp")["server_binary"]), id="binary-input")
                 yield Label(t("Local GGUF path (host; leave HF fields empty)", "로컬 GGUF 경로 (호스트; HF 필드는 비워 두세요)"))
                 yield Input(id="model-path-input")
+                yield Label(t("Docker model directory (mounted read-only at /models)", "Docker 모델 디렉터리 (/models 에 읽기 전용 마운트)"))
+                yield Input(placeholder="/srv/models", id="model-volume-input")
                 yield Label(t("Projector GGUF (optional, host)", "프로젝터 GGUF (선택, 호스트)"))
                 yield Input(id="mmproj-path-input")
                 yield Label(t("Draft GGUF (optional, host)", "드래프트 GGUF (선택, 호스트)"))
@@ -195,7 +197,7 @@ class QuickSetupScreen(ModalScreen[str]):
                         "수동 파일명 (조회 실패 시 활성화)",
                     ),
                     id="manual-file-input",
-                    disabled=True,
+                    disabled=False,
                 )
                 yield Static("", id="moe-hint")
 
@@ -448,6 +450,7 @@ class QuickSetupScreen(ModalScreen[str]):
         runtime = str(self.query_one("#runtime-select", Select).value)
         binary = self._get("binary-input") or "llama-server"
         model_path = self._get("model-path-input")
+        model_volume = self._get("model-volume-input")
         mmproj_path = self._get("mmproj-path-input")
         draft_model_path = self._get("draft-path-input")
         draft_type = self._get("draft-type-input")
@@ -461,7 +464,7 @@ class QuickSetupScreen(ModalScreen[str]):
             not in (Select.NULL, Select.BLANK, "__none__", None)
             else ""
         )
-        if self._listing_failed:
+        if self._listing_failed or model_volume:
             gguf_file = self._get("manual-file-input")
         name_raw = self._get("name-input")
         port_raw = self._get("port-input")
@@ -488,10 +491,10 @@ class QuickSetupScreen(ModalScreen[str]):
         if mtp_n and draft_type != "draft-mtp":
             self.notify(t("Embedded MTP n requires draft type draft-mtp", "내장 MTP n에는 draft-mtp 유형이 필요합니다"), severity="error")
             return
-        if model_path and (repo or gguf_file):
+        if model_path and (repo or gguf_file or model_volume):
             self.notify(t("Choose a local host GGUF OR HF metadata", "로컬 호스트 GGUF 또는 HF 정보 중 하나를 선택하세요"), severity="error")
             return
-        if not model_path and (not repo or not _REPO_RE.match(repo)):
+        if not model_path and not model_volume and (not repo or not _REPO_RE.match(repo)):
             self.notify(t("A valid HF repo is required", "유효한 HF repo 필요"), severity="error")
             return
         if self._last_repo and repo != self._last_repo:
@@ -521,7 +524,7 @@ class QuickSetupScreen(ModalScreen[str]):
             return
 
         if not name_raw:
-            base = Path(model_path).stem if model_path else repo.rsplit("/", 1)[-1]
+            base = Path(model_path).stem if model_path else (Path(model_volume).name if model_volume else repo.rsplit("/", 1)[-1])
             base = re.sub(r"[-_]?GGUF$", "", base, flags=re.I)
             name_raw = re.sub(r"[^a-z0-9_-]+", "-", base.lower()).strip("-")
         if not name_raw:
@@ -608,7 +611,7 @@ class QuickSetupScreen(ModalScreen[str]):
                     disabled_params=disabled_params,
                 )
                 profile = Profile(
-                    runtime=runtime, server_binary=binary, model_path=model_path,
+                    runtime=runtime, server_binary=binary, model_path=model_path, model_volume=model_volume,
                     mmproj_path=mmproj_path, draft_model_path=draft_model_path,
                     draft_type=draft_type, chat_template_path=chat_template_path,
                     mtp_n=mtp_n,
@@ -618,8 +621,8 @@ class QuickSetupScreen(ModalScreen[str]):
                     gpu_id=gpu,
                     config_name=final_name,
                     model_file=gguf_file if not model_path else "",
-                    hf_repo=repo,
-                    hf_file=gguf_file,
+                    hf_repo="" if model_volume else repo,
+                    hf_file="" if model_volume else gguf_file,
                 )
                 save_config(config)
                 save_profile(profile)

@@ -182,6 +182,7 @@ class Profile:
     mtp_n: int = 0
     chat_template_path: str = ""
     host_bind: str = "127.0.0.1"
+    model_volume: str = ""
     image_tag: str = ""
     env_vars: dict[str, str] = field(default_factory=dict)
     downloaded: bool = False
@@ -230,6 +231,7 @@ def _to_profile(stored: profile_store.StoredProfile) -> Profile:
         mtp_n=stored.mtp_n,
         chat_template_path=stored.chat_template_path,
         host_bind=stored.host_bind,
+        model_volume=stored.model_volume,
         image_tag=stored.image_tag,
         env_vars=dict(stored.env_vars),
     )
@@ -255,6 +257,7 @@ def _to_stored(profile: Profile) -> profile_store.StoredProfile:
         mtp_n=profile.mtp_n,
         chat_template_path=profile.chat_template_path,
         host_bind=profile.host_bind,
+        model_volume=profile.model_volume,
         image_tag=profile.image_tag,
         env_vars=dict(profile.env_vars),
     )

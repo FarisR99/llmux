@@ -189,6 +189,19 @@ Profile and config mutations accept `--json`. On success they return
 authoritative saved record (including redacted profile environment values).
 Existing `list` and `show` JSON shapes remain unchanged.
 
+For a local Docker llama.cpp model directory, create or update a profile through
+the CLI rather than inspecting generated Compose files:
+
+```bash
+llmux profile edit NAME --model-volume /absolute/model-directory --model-file model.gguf --json
+```
+
+`model_volume` is Docker llama.cpp-only. llmux mounts it as `/models:ro` and
+uses `model_file` relative to that directory, so split GGUF shards remain
+available. It cannot be combined with `hf_repo`/`hf_file` or host-runtime
+`model_path`; the directory must be accessible to Docker. Consumers should use
+profile JSON as the authority for the mode.
+
 For local llama.cpp assets, first inspect the read-only catalog, then explicitly
 select the primary model and any companions:
 

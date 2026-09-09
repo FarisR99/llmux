@@ -106,7 +106,7 @@ uv run llmux down local-model</code></pre>
     <p>Key points:</p>
     <ul>
       <li><strong><code>command:</code> is not in the base file</strong> — it is injected by <code>.runtime/llamacpp/override-&lt;name&gt;.yaml</code>, generated per profile by <code>render-override.py</code>. This lets multiple llama.cpp profiles run concurrently without clobbering each other's command.</li>
-      <li><strong>Only the HF cache is mounted</strong> — <code>${HF_CACHE_PATH}</code> is bound into the container as <code>/root/.cache/huggingface</code>. There is no per-model bind mount; <code>llama-server</code> downloads the GGUF itself (see below).</li>
+      <li><strong>Local Docker model directory (optional)</strong> — set <code>model_volume</code> to an absolute host directory and <code>model_file</code> to its relative GGUF path. llmux mounts the directory as <code>/models:ro</code> and passes <code>--model /models/&lt;model_file&gt;</code>. Keep split shards beside that file. This mode is mutually exclusive with HF download metadata.</li>
       <li><strong>GPU access via <code>NVIDIA_VISIBLE_DEVICES</code></strong> — the profile's comma-separated <code>gpu_id</code> controls which GPUs llama.cpp can use.</li>
     </ul>
 

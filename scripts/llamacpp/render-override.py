@@ -54,11 +54,15 @@ def main() -> int:
             print(f"config 형식 오류: {exc}", file=sys.stderr)
             return 1
         try:
+            local_model = ""
+            if getattr(stored, "model_volume", ""):
+                local_model = "/models/" + stored.model_file
             command = render_command(
                 cfg,
                 model_file=stored.model_file,
                 hf_repo=stored.hf_repo,
                 hf_file=stored.hf_file,
+                local_model=local_model,
             )
         except ValueError as exc:
             print(f"config 렌더 실패: {exc}", file=sys.stderr)
@@ -71,6 +75,10 @@ def main() -> int:
                 },
             },
         }
+        if getattr(stored, "model_volume", ""):
+            override["services"]["llama-server"]["volumes"] = [
+                "${MODEL_VOLUME_PATH:?MODEL_VOLUME_PATH is required for model_volume}:/models:ro"
+            ]
 
         out_path = RUNTIME_DIR / f"override-{profile}.yaml"
         header = (
