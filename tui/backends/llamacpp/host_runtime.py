@@ -132,16 +132,16 @@ async def prepare_profile(name: str, *, max_workers: int | None = None) -> dict:
     bundle = bundle_paths(stored)
     # Validate arguments before potentially expensive downloads.
     render_command(
-        cfg, local_model=filename, host="127.0.0.1", port=stored.port,
+        cfg, local_model=filename, host=stored.host_bind, port=stored.port,
         **bundle,
     )
     model = await _download(stored, filename, shards, env, max_workers) if shards else filename
     argv = [binary, *render_command(
-        cfg, local_model=model, host="127.0.0.1", port=stored.port,
+        cfg, local_model=model, host=stored.host_bind, port=stored.port,
         **bundle,
     )]
     profile_store.render_env(stored)
-    return {"argv": argv, "env": env, "port": stored.port,
+    return {"argv": argv, "env": env, "port": stored.port, "bind_host": stored.host_bind,
             "cwd": str(profile_store.PROJECT_ROOT), "profile": stored, "config": cfg}
 
 
@@ -160,14 +160,18 @@ def port_conflict(profile) -> str | None:
     state = host_process.status(profile.name)
     if state["active"]:
         return None
-    with socket.socket() as sock:
+    probe_host = "::1" if ":" in profile.host_bind else "127.0.0.1"
+    family = socket.AF_INET6 if probe_host == "::1" else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind(("127.0.0.1", profile.port))
+            # A loopback bind reliably detects a same-family wildcard listener
+            # while avoiding a bind to an externally exposed address.
+            sock.bind((probe_host, profile.port))
         except OSError as exc:
             import errno
             if exc.errno == errno.EADDRINUSE:
-                return f"another local process on 127.0.0.1:{profile.port}"
+                return f"another local process on {probe_host}:{profile.port}"
             raise RuntimeError(f"Port probe failed: {exc}") from exc
     return None
 
@@ -207,7 +211,7 @@ async def stream_up(name: str, *, timeout: float = 45.0, max_wait: float = 1800.
     try:
         if host_process.status(name)["active"]:
             state = host_process.status(name)
-            if state["running"] and await _models_endpoint_ready(state["port"]):
+            if state["running"] and await _models_endpoint_ready(state["port"], bind_host=profile_store.load_profile(name, "llamacpp").host_bind):
                 yield ("log", f"Host profile '{name}' is already running")
                 yield ("rc", 0)
             else:
@@ -280,8 +284,9 @@ async def stream_up(name: str, *, timeout: float = 45.0, max_wait: float = 1800.
             state = host_process.status(name)
             if not state["running"]:
                 raise RuntimeError(f"Host server exited (exit {state.get('exit_code')}); see llmux logs {name}")
-            if await _models_endpoint_ready(spec["port"]):
-                yield ("log", f"Ready: http://127.0.0.1:{spec['port']}/v1")
+            if await _models_endpoint_ready(spec["port"], bind_host=spec["bind_host"]):
+                from .backend_runtime import local_api_url
+                yield ("log", f"Ready: {local_api_url(spec['port'], spec['bind_host'])}")
                 yield ("rc", 0)
                 return
             await asyncio.sleep(0.5)
@@ -318,7 +323,7 @@ async def down(name: str) -> tuple[int, str]:
 async def get_status(profile):
     from .backend_runtime import ContainerStatus, _models_endpoint_ready
     state = host_process.status(profile.name)
-    ready = state["running"] and await _models_endpoint_ready(state["port"])
+    ready = state["running"] and await _models_endpoint_ready(state["port"], bind_host=profile.host_bind)
     return ContainerStatus(
         profile_name=profile.name, container_name="", runtime="host",
         running=state["running"], status_text="running" if ready else state["status"],
@@ -326,7 +331,7 @@ async def get_status(profile):
         port=str(state.get("port", profile.port)), gpu_id=profile.gpu_id,
         model=profile.model_path or profile.hf_repo or profile.model_file,
         pid=state["pid"], executable=state.get("executable", profile.server_binary),
-        exit_code=state.get("exit_code"), ready=bool(ready))
+        exit_code=state.get("exit_code"), ready=bool(ready), bind_host=profile.host_bind)
 
 
 _FLAG_CACHE: dict[tuple, set[str]] = {}

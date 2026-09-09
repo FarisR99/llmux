@@ -570,7 +570,8 @@ def ps(
              "gpu": s.gpu_id, "model": s.model,
              "runtime": getattr(s, "runtime", "docker"), "pid": getattr(s, "pid", None),
              "executable": getattr(s, "executable", ""), "exit_code": getattr(s, "exit_code", None),
-             "ready": getattr(s, "ready", getattr(s, "health", "") == "healthy"), "error": getattr(s, "error", "")}
+             "ready": getattr(s, "ready", getattr(s, "health", "") == "healthy"), "error": getattr(s, "error", ""),
+             "bind_host": getattr(s, "bind_host", "")}
             for bk, s in statuses]
     for error in errors:
         typer.echo(f"status probe failed: {error}", err=True)

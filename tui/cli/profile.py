@@ -286,6 +286,7 @@ def new_profile(
         "vllm", "--backend", "-b", help=f"Backend ({', '.join(BACKENDS)})."
     ),
     runtime: str = typer.Option("", "--runtime", help="docker or host (llama.cpp only)."),
+    host_bind: str = typer.Option("127.0.0.1", "--host-bind", help="Host runtime bind IP (default: 127.0.0.1; non-loopback exposes the API)."),
     server_binary: str = typer.Option("", "--server-binary", help="Host llama-server executable."),
     model_path: str = typer.Option("", "--model-path", help="Host local GGUF path."),
     mmproj_path: str = typer.Option("", "--mmproj-path", help="Host multimodal projector GGUF."),
@@ -381,6 +382,8 @@ def new_profile(
     defaults = profile_store.effective_defaults(backend)
     runtime = runtime or str(defaults.get("runtime", "docker"))
     server_binary = server_binary or str(defaults.get("server_binary", "llama-server"))
+    if host_bind != "127.0.0.1" and runtime != "host":
+        raise typer.BadParameter("--host-bind requires --runtime host", param_hint="--host-bind")
     sp = profile_store.StoredProfile(
         runtime=runtime,
         server_binary=server_binary,
@@ -390,6 +393,7 @@ def new_profile(
         draft_type=draft_type,
         mtp_n=mtp_n,
         chat_template_path=chat_template_path,
+        host_bind=host_bind,
         name=name,
         backend=backend,
         container_name=container_name or name,
@@ -483,6 +487,7 @@ def edit_profile(
     name: str = typer.Argument(..., help="Profile name."),
     backend: Optional[str] = typer.Option(None, "--backend", "-b"),
     runtime: Optional[str] = typer.Option(None, "--runtime"),
+    host_bind: Optional[str] = typer.Option(None, "--host-bind", help="Host runtime bind IP; non-loopback exposes the API."),
     server_binary: Optional[str] = typer.Option(None, "--server-binary"),
     model_path: Optional[str] = typer.Option(None, "--model-path"),
     mmproj_path: Optional[str] = typer.Option(None, "--mmproj-path"),
@@ -562,6 +567,8 @@ def edit_profile(
     def apply_updates(sp: profile_store.StoredProfile) -> None:
         if runtime is not None:
             sp.runtime = runtime
+        if host_bind is not None:
+            sp.host_bind = host_bind
         if server_binary is not None:
             sp.server_binary = server_binary
         if model_path is not None:

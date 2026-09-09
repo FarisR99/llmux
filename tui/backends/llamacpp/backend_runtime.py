@@ -88,6 +88,7 @@ class ContainerStatus:
     exit_code: int | None = None
     ready: bool = False
     error: str = ""
+    bind_host: str = ""
 
 
 def get_dev_build_defaults() -> tuple[str, str]:
@@ -410,13 +411,20 @@ async def get_container_statuses(*, runtime: str | None = None, partial: bool = 
     return statuses
 
 
-async def _models_endpoint_ready(port: str | int, timeout: int = 3) -> bool:
+def local_api_url(port: str | int, bind_host: str = "127.0.0.1") -> str:
+    """A probe URL; wildcard listeners are never used as client destinations."""
+    host = "127.0.0.1" if bind_host == "0.0.0.0" else "::1" if bind_host == "::" else bind_host
+    rendered = f"[{host}]" if ":" in host else host
+    return f"http://{rendered}:{port}/v1"
+
+
+async def _models_endpoint_ready(port: str | int, timeout: int = 3, bind_host: str = "127.0.0.1") -> bool:
     loop = asyncio.get_running_loop()
 
     def _probe() -> bool:
         try:
             with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/v1/models", timeout=timeout
+                f"{local_api_url(port, bind_host)}/models", timeout=timeout
             ) as response:
                 payload = json.loads(response.read().decode("utf-8", errors="replace"))
             data = payload.get("data", [])

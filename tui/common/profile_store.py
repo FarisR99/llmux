@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 import fcntl
+import ipaddress
 import os
 import re
 import shlex
@@ -79,7 +80,7 @@ _PROFILE_KEYS_BY_BACKEND = {
     "llamacpp": _SHARED_PROFILE_KEYS
     | {
         "model_file", "hf_repo", "hf_file", "server_binary", "model_path",
-        "mmproj_path", "draft_model_path", "draft_type", "mtp_n", "chat_template_path",
+        "mmproj_path", "draft_model_path", "draft_type", "mtp_n", "chat_template_path", "host_bind",
     },
 }
 _PROTECTED_ENV_KEYS = frozenset(
@@ -239,6 +240,8 @@ class StoredProfile:
     draft_type: str = ""
     mtp_n: int = 0
     chat_template_path: str = ""
+    # Host-runtime-only listener address. Never inherited from config defaults.
+    host_bind: str = "127.0.0.1"
 
 
 def _load_yaml() -> dict:
@@ -503,6 +506,7 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
         draft_type=merged.get("draft_type", ""),
         mtp_n=_as_int("mtp_n", merged.get("mtp_n", 0)),
         chat_template_path=merged.get("chat_template_path", ""),
+        host_bind=entry.get("host_bind", "127.0.0.1"),
     )
     _validate_profile(profile)
     return profile
@@ -517,6 +521,14 @@ def _validate_profile(profile: StoredProfile) -> None:
         )
     if profile.runtime not in ("docker", "host"):
         raise ValueError("runtime must be docker or host")
+    if not isinstance(profile.host_bind, str):
+        raise ValueError("host_bind must be a literal IP address")
+    try:
+        ipaddress.ip_address(profile.host_bind)
+    except ValueError as exc:
+        raise ValueError("host_bind must be a literal IPv4 or IPv6 address (without a port)") from exc
+    if profile.runtime == "docker" and profile.host_bind != "127.0.0.1":
+        raise ValueError("host_bind requires runtime=host")
     if profile.backend == "vllm" and profile.runtime != "docker":
         raise ValueError("vLLM supports only runtime=docker")
     for key in (
@@ -711,6 +723,9 @@ def _profile_to_entry(
         ):
             if getattr(profile, key) != defaults.get(key, default):
                 out[key] = getattr(profile, key)
+        # Intentionally profile-scoped, never a Docker/config default.
+        if profile.runtime == "host" and profile.host_bind != "127.0.0.1":
+            out["host_bind"] = profile.host_bind
     if profile.env_vars:
         out["env_vars"] = dict(profile.env_vars)
     if profile.image_tag:

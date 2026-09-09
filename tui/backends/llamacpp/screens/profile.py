@@ -111,6 +111,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
     def _runtime_fields(self) -> None:
         host = self.query_one("#runtime-select", Select).value == "host"
         self.query_one("#binary-row").display = host
+        self.query_one("#host-bind-row").display = host
         self.query_one("#model-path-row").display = host
         self.query_one("#mmproj-path-row").display = host
         self.query_one("#draft-path-row").display = host
@@ -159,6 +160,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 with Horizontal(classes="form-row", id="binary-row"):
                     yield Label(t("Server binary", "서버 실행 파일"))
                     yield Input(value=p.server_binary if p else str(profile_store.effective_defaults("llamacpp")["server_binary"]), id="binary-input")
+                with Horizontal(classes="form-row", id="host-bind-row"):
+                    yield Label(t("Bind address", "바인드 주소"))
+                    yield Input(value=p.host_bind if p else "127.0.0.1", id="host-bind-input")
+                yield Static(t("Host mode defaults to loopback. A non-loopback address exposes the API to reachable networks; configure firewall and forwarding outside llmux.", "호스트 모드는 기본적으로 루프백입니다. 루프백 이외 주소는 도달 가능한 네트워크에 API를 노출합니다. 방화벽과 포워딩은 llmux 외부에서 설정하세요."), classes="form-note", id="host-bind-note")
                 with Horizontal(classes="form-row", id="model-path-row"):
                     yield Label(t("Local GGUF path", "로컬 GGUF 경로"))
                     yield Input(value=p.model_path if p else "", id="model-path-input")
@@ -396,6 +401,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             draft_type=self.query_one("#draft-type-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "",
             mtp_n=mtp_n if self.query_one("#runtime-select", Select).value == "host" else 0,
             chat_template_path=self.query_one("#template-path-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "",
+            host_bind=self.query_one("#host-bind-input", Input).value.strip() if self.query_one("#runtime-select", Select).value == "host" else "127.0.0.1",
             name=name,
             container_name=container or name,
             port=port_int,

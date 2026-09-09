@@ -152,6 +152,12 @@ configs through `llmux profile ...` and `llmux config ...` only—never by
 editing runtime artifacts.
 
 Host runtime is supported only for llama.cpp profiles; vLLM is Docker-only.
+Its persisted `host_bind` field defaults to `127.0.0.1` and is independent of
+Docker-oriented config values. Use `llmux profile edit NAME --host-bind 0.0.0.0`
+only when the operator intends to expose the host listener for a firewall and
+forwarding setup; llmux does not create those network rules. `ps --runtime host
+--json` reports `bind_host` for consumers. Wildcard binds are probed through a
+safe loopback API URL, not by connecting to `0.0.0.0` or `::`.
 Some Docker-only options are rejected for host profiles. Lifecycle operations
 are locked, so a concurrent action can report an operation-in-progress error;
 wait for the first operation to finish and retry. Profiles must be stopped

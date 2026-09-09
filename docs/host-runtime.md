@@ -127,10 +127,26 @@ such as `up --pull`, `--dev`, and `--tag` are rejected for host profiles.
 
 ## Lifecycle and status
 
-Host servers bind to `127.0.0.1` at the profile port. llmux manages the bind
-address, port, primary model, metrics, and disabled web UI; config/extra arguments
-cannot override these settings. Benchmarking and monitoring use the same HTTP
-endpoints as Docker profiles.
+Host servers bind to `127.0.0.1` at the profile port by default. This keeps an
+unauthenticated inference endpoint local to the machine. To deliberately expose
+the listener to a WSL/Windows forwarding or LAN setup, set the host-runtime-only
+profile field (it does not inherit Docker config `host` values):
+
+```bash
+llmux profile edit custom-host --host-bind 0.0.0.0
+```
+
+`--host-bind` accepts literal IPv4 or IPv6 addresses only, including
+`127.0.0.1`, `0.0.0.0`, `::1`, and `::`; it rejects names, URLs, ports,
+whitespace, and server arguments. A non-loopback address exposes the endpoint
+to reachable networks. Firewall rules, Windows port proxies, and network policy
+remain the operator's responsibility; llmux creates none. Readiness uses a
+canonical local address (`127.0.0.1` for `0.0.0.0`, `::1` for `::`) rather than
+trying to connect to a wildcard listener.
+
+llmux manages the bind address, port, primary model, metrics, and disabled web
+UI; config/extra arguments cannot override these settings. Benchmarking and
+monitoring use the same HTTP endpoints as Docker profiles.
 
 A detached supervisor retains process identity, exit status, and rotating logs
 under the data directory's `.runtime/llamacpp/host/<profile>/`. State is private to the current user;
