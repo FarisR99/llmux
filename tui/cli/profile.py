@@ -813,7 +813,7 @@ def quick_setup(
     runtime: str = typer.Option("", "--runtime", help="docker or host (llama.cpp only)."),
     server_binary: str = typer.Option("", "--server-binary", help="Host llama-server executable."),
     model_path: str = typer.Option("", "--model-path", help="Host local GGUF path."),
-    model_volume: str = typer.Option("", "--model-volume", help="Docker llama.cpp host directory mounted at /models:ro; use --hf-file as its relative model filename."),
+    model_volume: str = typer.Option("", "--model-volume", help="Docker llama.cpp host directory mounted at /models:ro; use --model-file as its relative model filename."),
     port: int = typer.Option(
         0, "--port", "-p",
         help="Host port (0 = backend default: vLLM 8000, llama.cpp 8080).",
@@ -845,6 +845,7 @@ def quick_setup(
         "", "--hf-file",
         help="llama.cpp only: GGUF filename inside the repo (validated against HF API when reachable).",
     ),
+    model_file: str = typer.Option("", "--model-file", help="Docker model-volume only: GGUF path relative to --model-volume."),
     ctx_size: str = typer.Option(
         QUICK_SETUP_CTX_SIZE, "--ctx-size",
         help="llama.cpp only: --ctx-size (token context). Empty = backend default.",
@@ -913,6 +914,7 @@ def quick_setup(
         llamacpp_only={
             "--hf-repo": bool(hf_repo),
             "--hf-file": bool(hf_file),
+            "--model-file": bool(model_file),
             "--ctx-size": ctx_size != QUICK_SETUP_CTX_SIZE,
             "--n-gpu-layers": n_gpu_layers != QUICK_SETUP_N_GPU_LAYERS,
             "--batch-size": bool(batch_size),
@@ -964,7 +966,7 @@ def quick_setup(
         )
 
     _quick_setup_llamacpp(
-        runtime=runtime, server_binary=server_binary, model_path=model_path, model_volume=model_volume,
+        runtime=runtime, server_binary=server_binary, model_path=model_path, model_volume=model_volume, model_file=model_file,
         hf_repo=hf_repo,
         hf_file=hf_file,
         name=name,
@@ -1108,6 +1110,7 @@ def _quick_setup_llamacpp(
     server_binary: str = "llama-server",
     model_path: str = "",
     model_volume: str = "",
+    model_file: str = "",
 ) -> None:
     from tui.backends.llamacpp.backend import (
         CONFIG_DIR as llamacpp_config_dir,
@@ -1169,8 +1172,8 @@ def _quick_setup_llamacpp(
 
     else:
         if model_volume:
-            if runtime != "docker" or hf_repo or not hf_file:
-                raise typer.BadParameter("--model-volume requires Docker runtime and --hf-file, with no --hf-repo")
+            if runtime != "docker" or hf_repo or hf_file or not model_file:
+                raise typer.BadParameter("--model-volume requires Docker runtime and --model-file, with no HF metadata")
             repo = Path(model_volume).name
         else:
             if runtime != "host" or hf_repo or hf_file:
@@ -1203,8 +1206,10 @@ def _quick_setup_llamacpp(
         src = l_load_config(copy_config_from)
         params.update(src.params)
         disabled_params = dict(src.disabled_params)
-    if not model_path:
+    if not model_path and not model_volume:
         params["model-file"] = hf_file
+    elif model_volume:
+        params["model-file"] = model_file
 
     def _set_int(key: str, raw: str, *, param_hint: str) -> None:
         if not raw:
@@ -1267,7 +1272,7 @@ def _quick_setup_llamacpp(
                 port=int(port),
                 gpu_id=gpu_id,
                 config_name=final_name,
-                model_file=hf_file,
+                model_file=model_file if model_volume else hf_file,
                 hf_repo=repo if not (model_path or model_volume) else "",
                 hf_file=hf_file if not model_volume else "",
             )
