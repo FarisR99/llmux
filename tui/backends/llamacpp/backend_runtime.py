@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import aclosing
+
 import asyncio
 import errno
 import json
@@ -7,6 +9,7 @@ import os
 import socket
 import sys
 import urllib.request
+from tui.common.ssl_ctx import open_url
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +22,7 @@ from tui.common.conflicts import (
 from tui.common.docker import (
     run_command as _docker_run,
 )
-from tui.common.env import expand_env_values, validate_common_env
+from tui.common.env import validate_common_env
 
 from .backend import (
     COMMON_ENV,
@@ -109,14 +112,9 @@ async def _stream_build_dev_image(
     if _BUILD_LOCK.locked():
         yield ("log", "Another llamacpp dev build is already running. Waiting...")
     async with _BUILD_LOCK:
-        async for event in _do_build_dev_image(
-            branch,
-            repo_url=repo_url,
-            custom_tag=custom_tag,
-            cuda_arch=cuda_arch,
-            use_multi_arch=use_multi_arch,
-        ):
-            yield event
+        async with aclosing(_do_build_dev_image(branch, repo_url=repo_url, custom_tag=custom_tag, cuda_arch=cuda_arch, use_multi_arch=use_multi_arch)) as _owned_stream:
+            async for event in _owned_stream:
+                yield event
 
 
 async def _do_build_dev_image(
@@ -148,15 +146,9 @@ async def _do_build_dev_image(
     else:
         log_lines.append("Building with CUDA_DOCKER_ARCH=default (multi-arch, slower)")
 
-    async for event in dev_build.stream_build(
-        LLAMACPP_DEV_SPEC,
-        branch,
-        repo_url=repo_url,
-        custom_tag=custom_tag,
-        extra_build_args=tuple(extra_build_args),
-        extra_log_lines=tuple(log_lines),
-    ):
-        yield event
+    async with aclosing(dev_build.stream_build(LLAMACPP_DEV_SPEC, branch, repo_url=repo_url, custom_tag=custom_tag, extra_build_args=tuple(extra_build_args), extra_log_lines=tuple(log_lines))) as _owned_stream:
+        async for event in _owned_stream:
+            yield event
 
 
 async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool:
@@ -177,9 +169,14 @@ async def _run(*args: str, env: dict[str, str] | None = None, timeout: float = 6
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
         return -1, "Command timed out"
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
     rc = proc.returncode if proc.returncode is not None else -1
     return rc, (stdout or b"").decode(errors="replace")
 
@@ -209,16 +206,13 @@ async def _stream(args: list[str], *, env: dict[str, str] | None = None):
         await proc.wait()
         rc = proc.returncode if proc.returncode is not None else -1
         yield ("rc", rc)
-    except asyncio.CancelledError:
-        try:
-            proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
-        try:
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
             await proc.wait()
-        except (asyncio.CancelledError, ProcessLookupError, OSError):
-            pass
-        raise
 
 
 def _override_path(profile_name: str) -> Path:
@@ -237,7 +231,7 @@ def _compose_files(profile: Profile) -> list[str]:
 def _compose_env(profile: Profile) -> dict[str, str]:
     env = os.environ.copy()
     if COMMON_ENV.exists():
-        env.update(expand_env_values(_parse_env_file(COMMON_ENV)))
+        env.update(_parse_env_file(COMMON_ENV, expand=True))
     if profile.path.exists():
         profile_env = _parse_env_file(profile.path)
         env.update(
@@ -418,14 +412,18 @@ def local_api_url(port: str | int, bind_host: str = "127.0.0.1") -> str:
     return f"http://{rendered}:{port}/v1"
 
 
-async def _models_endpoint_ready(port: str | int, timeout: int = 3, bind_host: str = "127.0.0.1") -> bool:
+async def _models_endpoint_ready(
+    port: str | int, timeout: int = 3, bind_host: str = "127.0.0.1", *, api_key: str = ""
+) -> bool:
     loop = asyncio.get_running_loop()
 
     def _probe() -> bool:
         try:
-            with urllib.request.urlopen(
-                f"{local_api_url(port, bind_host)}/models", timeout=timeout
-            ) as response:
+            request = urllib.request.Request(
+                f"{local_api_url(port, bind_host)}/models",
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+            )
+            with open_url(request, timeout=timeout) as response:
                 payload = json.loads(response.read().decode("utf-8", errors="replace"))
             data = payload.get("data", [])
             return any(isinstance(item, dict) and item.get("id") for item in data)
@@ -464,6 +462,13 @@ async def _post_start_validation(
     last_log_tail: str | None = None
     last_heartbeat = start
     downloaded_bytes = 0
+    from tui.common.http import config_api_key
+
+    try:
+        api_key = await config_api_key(load_config(profile.config_name or profile.name).params, profile.container_name, backend="llamacpp", env=profile.env_vars)
+    except (OSError, RuntimeError, ValueError) as exc:
+        yield ("result", False, [f"API authentication configuration failed: {exc}"])
+        return
 
     while True:
         rc, state = await _docker_run(
@@ -516,7 +521,7 @@ async def _post_start_validation(
             )
             return
 
-        if await _models_endpoint_ready(profile.port):
+        if await _models_endpoint_ready(profile.port, **({"api_key": api_key} if api_key else {})):
             yield ("result", True, [])
             return
 
@@ -803,15 +808,14 @@ async def stream_container_up(
         elif not matches:
             yield ("log", f"▸ Dev image {resolved_image_tag} exists but was built from a different repo/branch — rebuilding from {resolved_repo}@{resolved_branch}")
         if not matches:
-            async for event in _stream_build_dev_image(
-                resolved_branch, repo_url=resolved_repo, custom_tag=tag
-            ):
-                if event[0] == "rc":
-                    if int(event[1]) != 0:
-                        yield event
-                        return
-                    continue
-                yield event
+            async with aclosing(_stream_build_dev_image(resolved_branch, repo_url=resolved_repo, custom_tag=tag)) as _owned_stream:
+                async for event in _owned_stream:
+                    if event[0] == "rc":
+                        if int(event[1]) != 0:
+                            yield event
+                            return
+                        continue
+                    yield event
     elif tag:
         resolved_image_tag = tag.strip()
 
@@ -871,35 +875,35 @@ async def stream_container_up(
     )
     cmd = [*_compose_base_args(profile), "up", "-d", "--pull", pull_policy]
 
-    async for event in _stream(cmd, env=env):
-        if event[0] != "rc":
-            yield event
-            continue
-        rc = int(event[1])
-        if rc != 0:
-            yield ("rc", rc)
-            return
+    async with aclosing(_stream(cmd, env=env)) as _owned_stream:
+        async for event in _owned_stream:
+            if event[0] != "rc":
+                yield event
+                continue
+            rc = int(event[1])
+            if rc != 0:
+                yield ("rc", rc)
+                return
 
-        ok = False
-        val_messages: list[str] = []
-        async for ev in _post_start_validation(
-            profile, hf_cache_path=env.get("HF_CACHE_PATH") or None
-        ):
-            if ev[0] == "result":
-                ok, val_messages = ev[1], ev[2]
-            else:
-                yield ev
-        for msg in val_messages:
-            yield ("log", msg)
-        if not ok:
-            yield ("rc", 1)
-            return
+            ok = False
+            val_messages: list[str] = []
+            async with aclosing(_post_start_validation(profile, hf_cache_path=env.get('HF_CACHE_PATH') or None)) as _owned_stream:
+                async for ev in _owned_stream:
+                    if ev[0] == "result":
+                        ok, val_messages = ev[1], ev[2]
+                    else:
+                        yield ev
+            for msg in val_messages:
+                yield ("log", msg)
+            if not ok:
+                yield ("rc", 1)
+                return
 
-        yield ("log", f"✓ 프로필 '{profile_name}' 활성화됨")
-        yield ("log", f"  Endpoint: http://localhost:{profile.port}/v1")
-        yield ("log", f"  Ready:    curl http://localhost:{profile.port}/v1/models")
-        yield ("rc", 0)
-        return
+            yield ("log", f"✓ 프로필 '{profile_name}' 활성화됨")
+            yield ("log", f"  Endpoint: http://localhost:{profile.port}/v1")
+            yield ("log", f"  Ready:    curl http://localhost:{profile.port}/v1/models")
+            yield ("rc", 0)
+            return
 
 
 async def stream_container_prepare(profile_name: str, *, max_workers: int | None = None):
@@ -945,7 +949,13 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
         yield ("rc", 1)
         return
 
-    if not profile.hf_repo or not (profile.hf_file or profile.model_file):
+    try:
+        hf_file = prepare.resolve_gguf_file(load_config(profile.config_name or profile.name).get("model-file"), profile.model_file, profile.hf_file)
+    except (OSError, RuntimeError, ValueError) as exc:
+        yield ("log", f"Error: {exc}")
+        yield ("rc", 1)
+        return
+    if not profile.hf_repo or not hf_file:
         yield ("log", f"✗ '{profile_name}' 에 hf_repo / hf_file 이 없습니다 — 받을 GGUF 를 특정할 수 없습니다.")
         yield ("log", f"  llmux profile edit {profile_name} --hf-repo <org/repo> --hf-file <파일.gguf>")
         yield ("rc", 1)
@@ -982,14 +992,15 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
             yield ("log", f"  먼저 빌드하세요: uv run llmux image build-dev --backend llamacpp --tag {dev_tag}")
             yield ("rc", 1)
             return
-        async for event in prepare.stream_pull(image_ref):
-            if event[0] == "rc":
-                if int(event[1]) != 0:
-                    yield ("log", f"✗ 이미지 pull 실패: {image_ref}")
-                    yield ("rc", int(event[1]))
-                    return
-            else:
-                yield event
+        async with aclosing(prepare.stream_pull(image_ref)) as _owned_stream:
+            async for event in _owned_stream:
+                if event[0] == "rc":
+                    if int(event[1]) != 0:
+                        yield ("log", f"✗ 이미지 pull 실패: {image_ref}")
+                        yield ("rc", int(event[1]))
+                        return
+                else:
+                    yield event
     yield ("log", f"▸ Image: {image_ref}")
 
     cache_path = prepare.hf_cache_path()
@@ -998,22 +1009,14 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
         yield ("rc", 1)
         return
 
-    hf_file = profile.hf_file or profile.model_file
-
     yield ("log", f"▸ {profile.hf_repo} / {hf_file} 다운로드 → {cache_path}")
     rc = -1
-    async for event in prepare.stream_llamacpp_download(
-        hf_repo=profile.hf_repo,
-        hf_file=hf_file,
-        cache_path=cache_path,
-        token=prepare.hf_token(),
-        container_name=prepare.prepare_container_name(profile.container_name),
-        max_workers=max_workers,
-    ):
-        if event[0] == "rc":
-            rc = int(event[1])
-        else:
-            yield event
+    async with aclosing(prepare.stream_llamacpp_download(hf_repo=profile.hf_repo, hf_file=hf_file, cache_path=cache_path, token=prepare.hf_token(), container_name=prepare.prepare_container_name(profile.container_name), max_workers=max_workers)) as _owned_stream:
+        async for event in _owned_stream:
+            if event[0] == "rc":
+                rc = int(event[1])
+            else:
+                yield event
     if rc != 0:
         yield ("log", f"✗ 다운로드 실패 (rc={rc}).")
         yield ("rc", rc if rc != 0 else 1)

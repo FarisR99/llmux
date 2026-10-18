@@ -436,8 +436,8 @@ class DashboardScreen(Screen):
     @work(exclusive=False, group="conflict-check")
     async def _check_and_confirm(self, row: DashboardRow, on_ok) -> None:
         modal_generation = self.app.modal_generation
-        port_msgs = port_conflicts(row, self._rows)
-        gpu_msgs = gpu_conflicts(row, self._rows)
+        remaining = [r for r in self._rows if not gpu_conflicts(row, [r])]
+        port_msgs = port_conflicts(row, remaining)
         probe_msgs: list[str] = []
         if self._scan_errors:
             failed = ", ".join(sorted(self._scan_errors))
@@ -466,7 +466,7 @@ class DashboardScreen(Screen):
         if not self.app.can_push_modal(modal_generation):
             return
 
-        if not port_msgs and not gpu_msgs and not ext_msgs and not probe_msgs:
+        if not port_msgs and not ext_msgs and not probe_msgs:
             on_ok()
             return
 
@@ -484,34 +484,12 @@ class DashboardScreen(Screen):
                 lines.append("")
             lines.append("[b]Port conflict (external):[/b]")
             lines += [f"  • {m}" for m in ext_msgs]
-        if gpu_msgs:
-            if lines:
-                lines.append("")
-            lines.append("[b]GPU conflict:[/b]")
-            lines += [f"  • {m}" for m in gpu_msgs]
-        hard_conflict = bool(port_msgs or ext_msgs or probe_msgs)
         lines.append("")
-        lines.append(
-            "Resolve the port check before starting."
-            if hard_conflict
-            else "Proceed despite the GPU overlap?"
-        )
+        lines.append("Resolve the port check before starting.")
         message = "\n".join(lines)
-
-        if hard_conflict:
-            self.app.push_screen(
-                ConfirmModal(message, confirm_label="Close", variant="error"),
-                lambda _confirmed: None,
-            )
-            return
-
-        def after(proceed: bool) -> None:
-            if proceed:
-                on_ok()
-
         self.app.push_screen(
-            ConfirmModal(message, confirm_label="Start with GPU overlap", variant="warning"),
-            after,
+            ConfirmModal(message, confirm_label="Close", variant="error"),
+            lambda _confirmed: None,
         )
 
 
@@ -559,7 +537,7 @@ class DashboardScreen(Screen):
             p = vbackend.load_profile(name)
             cfg = p.config_name or name
             self.app.push_screen(
-                ConfigFormScreen(config_name=cfg), self._after_mutation
+                ConfigFormScreen(config_name=cfg, profile_name=name), self._after_mutation
             )
         elif action == "delete":
             if row.running:
@@ -587,13 +565,16 @@ class DashboardScreen(Screen):
             on_ok,
         )
 
-    @work(exclusive=True)
+    @work(exclusive=True, group="benchmark")
     async def _run_vllm_bench(self, row: DashboardRow) -> None:
         if not row.port:
             self.notify(t("No port information", "포트 정보 없음"), severity="error")
             return
         try:
-            models = await list_served_models(row.port)
+            from tui.common.http import profile_api_key
+
+            api_key = await profile_api_key("vllm", row.profile_name)
+            models = await list_served_models(row.port, **({"api_key": api_key} if api_key else {}))
             model = models[0] if models else (row.model or "")
             if not model:
                 raise RuntimeError(
@@ -608,6 +589,7 @@ class DashboardScreen(Screen):
             r = await run_bench(
                 row.port,
                 model,
+                **({"api_key": api_key} if api_key else {}),
                 runs=BENCH_RUNS,
                 warmup=BENCH_WARMUP,
             )
@@ -665,7 +647,7 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.config import ConfigFormScreen
 
             self.app.push_screen(
-                ConfigFormScreen(profile.config_name or name), self._after_mutation
+                ConfigFormScreen(profile.config_name or name, profile_name=name), self._after_mutation
             )
         elif action == "edit-profile":
             from tui.backends.llamacpp.screens.profile import ProfileFormScreen
@@ -749,11 +731,14 @@ class DashboardScreen(Screen):
         self._reload()
         self._poll_gpu()
 
-    @work(exclusive=True)
+    @work(exclusive=True, group="benchmark")
     async def _run_llamacpp_bench(self, profile) -> None:
         try:
             config_name = profile.config_name or profile.name
             cfg = lbackend.load_config(config_name)
+            from tui.common.http import config_api_key
+
+            api_key = await config_api_key(cfg.params, profile.container_name, backend="llamacpp", env=profile.env_vars)
             alias = cfg.get("alias", config_name)
             if not isinstance(alias, str) or not alias.strip():
                 raise ValueError(f"invalid benchmark alias in config {config_name!r}")
@@ -768,6 +753,7 @@ class DashboardScreen(Screen):
             r = await run_bench(
                 profile.port,
                 alias,
+                **({"api_key": api_key} if api_key else {}),
                 runs=BENCH_RUNS,
                 warmup=BENCH_WARMUP,
             )

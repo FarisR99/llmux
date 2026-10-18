@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import aclosing
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -147,6 +149,7 @@ class ContainerUpScreen(Screen):
         self._dev_repo_url, self._dev_branch = get_dev_build_defaults()
         self._has_local_dev: bool = False
         self._gpu_timer = None
+        self._start_worker = None
         self._gpu_probe_error = ""
 
     def compose(self) -> ComposeResult:
@@ -280,7 +283,12 @@ class ContainerUpScreen(Screen):
             btn = radio_set.query_one(f"#{VER_DEV}", RadioButton)
         except Exception:
             return
-        images = await list_local_dev_images(LLAMACPP_DEV_SPEC)
+        try:
+            images = await list_local_dev_images(LLAMACPP_DEV_SPEC)
+        except RuntimeError as exc:
+            btn.label = t("Dev Build (image lookup failed)", "개발 빌드 (이미지 조회 실패)")
+            self.notify(str(exc), severity="error")
+            return
         self._has_local_dev = bool(images)
         label = (
             t(
@@ -315,7 +323,7 @@ class ContainerUpScreen(Screen):
     def _cleanup(self) -> None:
         if self._gpu_timer is not None:
             self._gpu_timer.stop()
-        self.workers.cancel_all()
+        self.workers.cancel_node(self)
 
     @on(Button.Pressed, "#cancel-btn")
     def _on_cancel(self) -> None:
@@ -327,8 +335,10 @@ class ContainerUpScreen(Screen):
         self.app.pop_screen()
 
     def action_confirm_start(self) -> None:
+        if self._start_worker is not None and not self._start_worker.is_finished:
+            return
         if self._profile.runtime == "host":
-            self._do_start()
+            self._start_worker = self._do_start()
             return
         try:
             if str(self.query_one("#version-scroll").styles.display) == "none":
@@ -363,7 +373,7 @@ class ContainerUpScreen(Screen):
         if pressed.id == VER_DEV and not self.query_one("#dev-repo-input", Input).value.strip():
             self.query_one("#dev-repo-input", Input).focus()
             return
-        self._do_start()
+        self._start_worker = self._do_start()
 
     @on(Button.Pressed, "#start-btn")
     def _on_start(self) -> None:
@@ -403,6 +413,12 @@ class ContainerUpScreen(Screen):
         if self._profile.runtime == "host":
             use_dev = use_default_image = False
             tag = repo_url = branch = ""
+
+        from tui.common.widgets import confirm_model_switch
+
+        if not await confirm_model_switch(self, "llamacpp", self.profile_name):
+            return
+
         try:
             conflict = await check_port_conflict(self._profile)
         except RuntimeError as exc:
@@ -434,21 +450,15 @@ class ContainerUpScreen(Screen):
             return
 
         rc = -1
-        async for msg_type, data in stream_container_up(
-            self.profile_name,
-            use_dev=use_dev,
-            use_default_image=use_default_image,
-            tag=tag,
-            repo_url=repo_url,
-            branch=branch,
-        ):
-            if msg_type == "log":
-                try:
-                    log_widget.write(backend.strip_ansi(data))
-                except Exception:
-                    pass
-            elif msg_type == "rc":
-                rc = int(data)
+        async with aclosing(stream_container_up(self.profile_name, use_dev=use_dev, use_default_image=use_default_image, tag=tag, repo_url=repo_url, branch=branch)) as _owned_stream:
+            async for (msg_type, data) in _owned_stream:
+                if msg_type == "log":
+                    try:
+                        log_widget.write(backend.strip_ansi(data))
+                    except Exception:
+                        pass
+                elif msg_type == "rc":
+                    rc = int(data)
 
         try:
             if rc == 0:
@@ -464,8 +474,9 @@ class ContainerUpScreen(Screen):
                         stream = logs(self.profile_name)
                     else:
                         stream = backend.stream_logs(self._profile.container_name)
-                    async for line in stream:
-                        log_widget.write(backend.strip_ansi(line))
+                    async with aclosing(stream) as _owned_stream:
+                        async for line in _owned_stream:
+                            log_widget.write(backend.strip_ansi(line))
                 except Exception as exc:
                     log_widget.write(t(f"Log stream error: {exc}", f"로그 스트림 오류: {exc}"))
             else:

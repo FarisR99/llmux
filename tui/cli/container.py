@@ -90,8 +90,13 @@ def up(
              "always abort.",
     ),
     json_out: bool = typer.Option(False, "--json", help="Emit structured contention errors."),
+    replace: bool = typer.Option(
+        False, "--replace", help="Stop llmux models sharing this profile's GPUs before starting it.",
+    ),
 ) -> None:
     """Start a profile's container. Streams compose output to stdout."""
+    if replace and force:
+        raise typer.BadParameter("--replace and --force are mutually exclusive")
     if dev and default_image:
         typer.echo(
             "Error: --dev and --default-image are mutually exclusive (one forces a "
@@ -128,6 +133,16 @@ def up(
             raise typer.Exit(code=2)
 
     try:
+        if replace:
+            from tui.common.model_switch import plan_switch, stop_switch_sources
+
+            async def replace_models():
+                target, sources = await plan_switch(bk, profile)
+                if sources:
+                    typer.echo("Stopping: " + ", ".join(f"{p.backend}/{p.name}" for p in sources))
+                    await stop_switch_sources(target, sources)
+
+            run_async(replace_models())
         warnings = run_async(gather_conflict_warnings(profile, bk))
     except Exception as exc:
         typer.echo(f"Conflict pre-flight failed: {exc}", err=True)
@@ -350,10 +365,11 @@ def benchmark(
         raise typer.Exit(code=2)
 
     async def _run() -> dict:
-        from tui.common.http import list_served_models, run_bench
+        from tui.common.http import list_served_models, profile_api_key, run_bench
 
+        api_key = await profile_api_key(bk, profile)
         if bk == "vllm":
-            served = await list_served_models(sp.port)
+            served = await list_served_models(sp.port, **({"api_key": api_key} if api_key else {}))
             model = served[0] if served else (sp.model_id or "")
             if not model:
                 raise RuntimeError(
@@ -373,6 +389,7 @@ def benchmark(
             max_tokens=max_tokens,
             runs=runs,
             warmup=warmup,
+            **({"api_key": api_key} if api_key else {}),
         )
         return {
             "profile": profile,

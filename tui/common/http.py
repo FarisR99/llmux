@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import statistics
 import time
 import urllib.request
+from tui.common.ssl_ctx import open_url
 
 BENCH_PROMPT = "Explain the theory of relativity in about 150 words."
 BENCH_MAX_TOKENS = 200
@@ -14,12 +16,60 @@ BENCH_WARMUP = 1
 BENCH_CHAT_TEMPLATE_KWARGS = {"enable_thinking": False}
 
 
+async def config_api_key(
+    params: dict, container_name: str, *, backend: str = "vllm", env: dict | None = None,
+) -> str:
+    env = env or {}
+    key = params.get("api-key") or env.get("LLAMA_API_KEY" if backend == "llamacpp" else "VLLM_API_KEY", "")
+    if isinstance(key, list):
+        key = key[0] if key else ""
+    key_file = params.get("api-key-file") or (env.get("LLAMA_ARG_API_KEY_FILE") if backend == "llamacpp" else None)
+    from_file = not key and bool(key_file)
+    if not key and key_file:
+        from tui.common.docker import run_command
+
+        path = key_file
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("api-key-file must be a non-empty container path")
+        rc, output = await run_command("docker", "exec", container_name, "cat", "--", path)
+        if rc:
+            raise RuntimeError("could not read api-key-file inside the server container")
+        key = next((line for line in output.splitlines() if line and not line.startswith("#")), "")
+        if not key:
+            raise ValueError("api-key-file contains no key")
+    if not isinstance(key, str) or any(ord(c) < 32 or ord(c) == 127 for c in key):
+        raise ValueError("api-key must be a string without control characters")
+    if backend == "llamacpp" and key and not from_file:
+        key = next((value for value in next(csv.reader([key])) if value), "")
+    return key
+
+
+async def profile_api_key(backend: str, name: str) -> str:
+    from tui.common import profile_store
+
+    profile = profile_store.load_profile(name, backend)
+    if profile is None:
+        raise ValueError(f"profile {backend}/{name} not found")
+    config_name = profile.config_name or profile.name
+    if backend == "vllm":
+        from tui.backends.vllm.backend_storage import load_config
+
+        params = load_config(config_name).extra_params
+    else:
+        from tui.backends.llamacpp.backend import load_config
+
+        params = load_config(config_name).params
+    return await config_api_key(params, profile.container_name or profile.name, backend=backend, env=profile.env_vars)
+
+
 async def chat_completion_bench(
     port: int | str,
     model: str,
     prompt: str = BENCH_PROMPT,
     max_tokens: int = BENCH_MAX_TOKENS,
     timeout: int = 600,
+    *,
+    api_key: str = "",
 ) -> dict:
     """단일 /v1/chat/completions 호출 → {elapsed, usage}."""
     payload = json.dumps(
@@ -38,10 +88,10 @@ async def chat_completion_bench(
         req = urllib.request.Request(
             f"http://localhost:{port}/v1/chat/completions",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {api_key}"} if api_key else {})},
         )
         t0 = time.time()
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with open_url(req, timeout=timeout) as r:
             raw = r.read().decode()
         elapsed = time.time() - t0
         d = json.loads(raw, strict=False)
@@ -58,6 +108,7 @@ async def run_bench(
     max_tokens: int = BENCH_MAX_TOKENS,
     runs: int = BENCH_RUNS,
     warmup: int = BENCH_WARMUP,
+    api_key: str = "",
 ) -> dict:
     """Warm up, then summarize measured completion throughput with the median."""
     if runs < 1:
@@ -69,13 +120,13 @@ async def run_bench(
 
     for _ in range(warmup):
         await chat_completion_bench(
-            port, model, prompt=prompt, max_tokens=max_tokens
+            port, model, prompt=prompt, max_tokens=max_tokens, **({"api_key": api_key} if api_key else {})
         )
 
     results: list[dict] = []
     for _ in range(runs):
         r = await chat_completion_bench(
-            port, model, prompt=prompt, max_tokens=max_tokens
+            port, model, prompt=prompt, max_tokens=max_tokens, **({"api_key": api_key} if api_key else {})
         )
         usage = r.get("usage")
         if not isinstance(usage, dict) or "completion_tokens" not in usage:
@@ -109,15 +160,17 @@ async def run_bench(
     }
 
 
-async def list_served_models(port: int | str, timeout: int = 5) -> list[str]:
+async def list_served_models(port: int | str, timeout: int = 5, *, api_key: str = "") -> list[str]:
     """Return model ids from `/v1/models`, raising when discovery fails."""
     loop = asyncio.get_running_loop()
 
     def _do() -> list[str]:
         try:
-            with urllib.request.urlopen(
-                f"http://localhost:{port}/v1/models", timeout=timeout
-            ) as r:
+            request = urllib.request.Request(
+                f"http://localhost:{port}/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+            )
+            with open_url(request, timeout=timeout) as r:
                 d = json.loads(r.read())
             if not isinstance(d, dict) or not isinstance(d.get("data"), list):
                 raise ValueError("response must contain a data list")

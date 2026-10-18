@@ -305,15 +305,17 @@ def list_profiles(running: set[str] | None = None) -> list[Profile]:
     result: list[Profile] = []
     for name in list_profile_names():
         p = load_profile(name)
-        if p.model_file and p.hf_repo:
-            model_paths = [model_dir / name for name in gguf_shard_names(p.model_file)]
+        from tui.common.prepare import resolve_gguf_file
+
+        filename = resolve_gguf_file(load_config(p.config_name or p.name).get("model-file"), p.model_file, p.hf_file)
+        if filename and p.hf_repo:
+            model_paths = [model_dir / name for name in gguf_shard_names(filename)]
             if all(path.exists() for path in model_paths):
                 p.downloaded = True
                 p.model_size_gb = round(
                     sum(path.stat().st_size for path in model_paths) / 1024**3, 1
                 )
         if not p.downloaded:
-            filename = p.hf_file or p.model_file
             cached = find_cached_gguf(p.hf_repo, filename)
             if cached is not None:
                 relative_parts = Path(gguf_shard_names(filename)[0]).parts
@@ -363,11 +365,11 @@ def load_config(name: str) -> Config:
     return Config(name=name, params=params, disabled_params=disabled)
 
 
-def save_config(config: Config) -> None:
+def save_config(config: Config, *, template: str | None = None) -> None:
     with profile_store.storage_transaction():
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         existing = config.path.read_text() if config.path.exists() else None
-        text = dump_active_config(existing, config.params)
+        text = dump_active_config(existing if existing is not None else template, config.params)
         profile_store._atomic_write(
             config.path,
             text + render_disabled_markers(config.disabled_params),
@@ -404,7 +406,7 @@ def format_config_param_value(value: Any) -> str:
     return str(value)
 
 
-async def extract_llama_server_flags(image_ref: str = "") -> set[str]:
+async def extract_llama_server_flags(image_ref: str = "", *, container_name: str = "") -> set[str]:
     if image_ref:
         image = image_ref
     else:
@@ -417,7 +419,7 @@ async def extract_llama_server_flags(image_ref: str = "") -> set[str]:
         raise RuntimeError(error)
     from tui.common.docker import image_identity
 
-    identity = await image_identity(image)
+    identity = await image_identity(image) if not container_name else None
     cache_file = None
     if identity is not None:
         cache_key = hashlib.sha256(f"{image}@{identity}".encode()).hexdigest()[:16]
@@ -438,20 +440,28 @@ async def extract_llama_server_flags(image_ref: str = "") -> set[str]:
             raise RuntimeError(f"invalid llama.cpp flag cache {cache_file}: {exc}") from exc
     proc = None
     try:
+        command = (
+            ["docker", "exec", container_name, "/app/llama-server", "--help"]
+            if container_name else
+            ["docker", "run", "--rm", "--pull=never", "--entrypoint", "/app/llama-server", identity or image, "--help"]
+        )
         proc = await asyncio.create_subprocess_exec(
-            "docker", "run", "--rm", "--entrypoint", "/app/llama-server",
-            image, "--help",
+            *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
     except asyncio.TimeoutError:
-        if proc is not None:
-            proc.kill()
-            await proc.wait()
         raise RuntimeError(f"timed out inspecting llama.cpp flags from {image}")
     except FileNotFoundError as exc:
         raise RuntimeError("docker is not installed or not available in PATH") from exc
+    finally:
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
     if proc.returncode not in (0, 1):
         raise RuntimeError(
             f"could not inspect llama.cpp flags from {image}: docker exited "
@@ -465,7 +475,7 @@ async def extract_llama_server_flags(image_ref: str = "") -> set[str]:
             flags.add(flag)
     if not flags:
         raise RuntimeError(f"could not parse llama.cpp flags from {image}")
-    if identity is None:
+    if identity is None and not container_name:
         identity = await image_identity(image)
         if identity is not None:
             cache_key = hashlib.sha256(f"{image}@{identity}".encode()).hexdigest()[:16]

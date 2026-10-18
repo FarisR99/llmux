@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -166,6 +168,7 @@ class ContainerUpScreen(Screen):
         self.profile_name = profile_name
         self._profile = load_profile(profile_name)
         self._gpu_timer = None
+        self._start_worker = None
         self._local_tag: str = ""
         self._release_version: str = ""
         self._version_retries: int = 0
@@ -294,7 +297,11 @@ class ContainerUpScreen(Screen):
         except Exception:
             pass
 
-        release_ver = await get_dockerhub_release_version()
+        try:
+            release_ver = await get_dockerhub_release_version()
+        except RuntimeError as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            release_ver = "unknown"
         self._release_version = release_ver if release_ver != "unknown" else ""
         try:
             btn = radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton)
@@ -386,7 +393,7 @@ class ContainerUpScreen(Screen):
     def _cleanup(self) -> None:
         if self._gpu_timer is not None:
             self._gpu_timer.stop()
-        self.workers.cancel_all()
+        self.workers.cancel_node(self)
 
     @on(Button.Pressed, "#cancel-btn")
     def _on_cancel(self) -> None:
@@ -410,6 +417,8 @@ class ContainerUpScreen(Screen):
         unless Custom/Dev still need their inputs filled, in which case focus
         the input instead.
         """
+        if self._start_worker is not None and not self._start_worker.is_finished:
+            return
         try:
             if str(self.query_one("#version-scroll").styles.display) == "none":
                 return  # already started — the version UI is hidden
@@ -443,7 +452,7 @@ class ContainerUpScreen(Screen):
         if pressed.id == VER_DEV and not self.query_one("#dev-repo-input", Input).value.strip():
             self.query_one("#dev-repo-input", Input).focus()
             return
-        self._do_start()
+        self._start_worker = self._do_start()
 
     @work(exclusive=True)
     async def _do_start(self) -> None:
@@ -475,7 +484,11 @@ class ContainerUpScreen(Screen):
             use_default_image = True
         elif selected_id == VER_OFFICIAL:
             if not self._release_version:
-                refreshed = await get_dockerhub_release_version()
+                try:
+                    refreshed = await get_dockerhub_release_version()
+                except RuntimeError as exc:
+                    self.notify(str(exc), severity="error", timeout=8)
+                    return
                 if refreshed == "unknown":
                     self.app.notify(
                         t(
@@ -513,6 +526,11 @@ class ContainerUpScreen(Screen):
                 self.app.notify(t("Please enter a custom tag.", "커스텀 태그를 입력하세요."), severity="error")
                 return
 
+        from tui.common.widgets import confirm_model_switch
+
+        if not await confirm_model_switch(self, "vllm", self.profile_name):
+            return
+
         # Always keep the runtime bind check enabled right before compose up.
         try:
             conflict = await check_port_conflict(self._profile)
@@ -546,29 +564,23 @@ class ContainerUpScreen(Screen):
 
         # Stream backend startup output in real-time
         rc = -1
-        async for msg_type, data in stream_container_up(
-            self.profile_name,
-            use_dev=use_dev,
-            use_default_image=use_default_image,
-            tag=tag,
-            pull=pull,
-            repo_url=repo_url,
-            branch=branch,
-        ):
-            if msg_type == "log":
-                try:
-                    log_widget.write(data)
-                except Exception:
-                    pass
-            elif msg_type == "rc":
-                rc = data
+        async with aclosing(stream_container_up(self.profile_name, use_dev=use_dev, use_default_image=use_default_image, tag=tag, pull=pull, repo_url=repo_url, branch=branch)) as _owned_stream:
+            async for (msg_type, data) in _owned_stream:
+                if msg_type == "log":
+                    try:
+                        log_widget.write(data)
+                    except Exception:
+                        pass
+                elif msg_type == "rc":
+                    rc = data
 
         try:
             if rc == 0:
                 status.update(t("[green bold]Container started. Logs: (Esc/q to close)[/green bold]", "[green bold]컨테이너 시작됨. 로그: (Esc/q 로 닫기)[/green bold]"))
                 try:
-                    async for line in stream_container_logs(self._profile.container_name):
-                        log_widget.write(line)
+                    async with aclosing(stream_container_logs(self._profile.container_name)) as _owned_stream:
+                        async for line in _owned_stream:
+                            log_widget.write(line)
                 except Exception as exc:
                     log_widget.write(t(f"Log stream error: {exc}", f"로그 스트림 오류: {exc}"))
             else:
@@ -654,8 +666,9 @@ class LogScreen(Screen):
         """Stream container logs into the RichLog widget."""
         log_widget = self.query_one(RichLog)
         try:
-            async for line in stream_container_logs(self.container_name):
-                log_widget.write(line)
+            async with aclosing(stream_container_logs(self.container_name)) as _owned_stream:
+                async for line in _owned_stream:
+                    log_widget.write(line)
         except Exception as exc:
             log_widget.write(t(f"\nLog stream error: {exc}", f"\n로그 스트림 오류: {exc}"))
 
@@ -673,5 +686,5 @@ class LogScreen(Screen):
         )
 
     def action_go_back(self) -> None:
-        self.workers.cancel_all()
+        self.workers.cancel_node(self)
         self.app.pop_screen()

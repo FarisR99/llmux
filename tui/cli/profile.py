@@ -1073,7 +1073,7 @@ def _quick_setup_vllm(
             extra_params=extra_params,
             disabled_params=disabled_params,
         )
-        save_config(config)
+        save_config(config, template=src.path.read_text() if copy_config_from else None)
         profile_store.create_profile(
             profile_store.StoredProfile(
                 name=final_name,
@@ -1262,7 +1262,7 @@ def _quick_setup_llamacpp(
             params=params,
             disabled_params=disabled_params,
         )
-        l_save_config(config)
+        l_save_config(config, template=src.path.read_text() if copy_config_from else None)
         profile_store.create_profile(
             profile_store.StoredProfile(
                 runtime=runtime, server_binary=server_binary, model_path=model_path, model_volume=model_volume,

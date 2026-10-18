@@ -3,6 +3,8 @@ from __future__ import annotations
 import shlex
 import sys
 
+from tui.common.prepare import resolve_gguf_file
+
 _MANAGED_FLAGS = frozenset(
     {"--host", "--port", "--webui", "--no-webui", "--ui", "--no-ui", "--metrics"}
 )
@@ -29,12 +31,7 @@ def render_command(
     ]
 
     configured_model_file = cfg.pop("model-file", "")
-    if configured_model_file is not None and not isinstance(configured_model_file, str):
-        raise ValueError(
-            "config key 'model-file' must be a string; "
-            f"got {type(configured_model_file).__name__}"
-        )
-    resolved_file = (hf_file or configured_model_file or model_file).strip()
+    resolved_file = resolve_gguf_file(configured_model_file, model_file, hf_file)
     resolved_repo = hf_repo.strip()
     if not local_model and not resolved_repo:
         raise ValueError(

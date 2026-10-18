@@ -477,9 +477,9 @@ def clone_config(
                 f"destination config already exists: {dst_path} (use --overwrite)",
                 param_hint="DST",
             )
-        data = _backend_load_config(bk, src)
-        disabled = _backend_load_disabled(bk, src)
-        saved = _backend_save_config(bk, dst, data, disabled)
+        source = _config_dir(bk) / f"{src}.yaml"
+        profile_store._atomic_write(dst_path, source.read_text())
+        saved = dst_path
     if json_out:
         _emit_config_mutation(bk, dst)
         return
@@ -587,14 +587,19 @@ def list_flags(
     if image_error:
         raise typer.BadParameter(image_error, param_hint="--image")
     try:
+        container = ""
+        if profile:
+            from tui.common.flag_discovery import profile_target
+
+            image, container = run_async(profile_target(backend, profile))
         if backend == "vllm":
             from tui.backends.vllm.backend_inspect import extract_vllm_params
 
-            flags = sorted(run_async(extract_vllm_params(image)))
+            flags = sorted(run_async(extract_vllm_params(image, **({"container_name": container} if container else {}))))
         else:
             from tui.backends.llamacpp.backend import extract_llama_server_flags
 
-            flags = sorted(run_async(extract_llama_server_flags(image)))
+            flags = sorted(run_async(extract_llama_server_flags(image, **({"container_name": container} if container else {}))))
     except RuntimeError as exc:
         typer.echo(f"flag discovery failed — {exc}", err=True)
         raise typer.Exit(code=1) from exc
